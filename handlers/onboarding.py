@@ -1,16 +1,16 @@
-"""Registration and verification: telegram id, name, photo, 18+, consent, language."""
+"""Registration and verification: telegram id, 18+, consent, language. Name/photo only in profile."""
 import logging
 from datetime import datetime
 
 from aiogram import Bot, F, Router
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart, StateFilter
 from aiogram.types import Message, ReplyKeyboardRemove, CallbackQuery
 from aiogram.fsm.context import FSMContext
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.types import InlineKeyboardButton
 
 from db.database import async_session_factory
-from db.models import User
+from db.models import User, zodiac_from_birth_date
 from services.user_service import get_user_by_telegram_id, get_or_create_user
 from fsm.states import OnboardingState
 from keyboards.common import main_menu_kb, cancel_kb, yes_no_kb
@@ -56,76 +56,80 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
                 reply_markup=main_menu_kb(locale),
             )
             return
-    await message.answer(t("onboarding_welcome", "ru"))
-    await state.set_state(OnboardingState.name)
-
-
-@router.message(OnboardingState.name, F.text)
-async def onboarding_name(message: Message, state: FSMContext) -> None:
-    name = (message.text or "").strip()
-    if not name or len(name) > 100:
-        await message.answer(t("onboarding_name_invalid", "ru"))
-        return
-    await state.update_data(name=name)
-    await message.answer(t("onboarding_photo", "ru"), reply_markup=cancel_kb())
-    await state.set_state(OnboardingState.photo)
-
-
-@router.message(OnboardingState.photo, F.photo)
-async def onboarding_photo(message: Message, state: FSMContext) -> None:
-    photo = message.photo[-1]
-    await state.update_data(photo_file_id=photo.file_id)
-    await message.answer(
-        t("onboarding_birth_date", "ru"),
-        reply_markup=cancel_kb(),
-    )
-    await state.set_state(OnboardingState.birth_date)
-
-
-@router.message(OnboardingState.birth_date, F.text)
-async def onboarding_birth_date(message: Message, state: FSMContext) -> None:
-    text = (message.text or "").strip()
-    try:
-        dt = datetime.strptime(text, "%d.%m.%Y")
-        if (datetime.now() - dt).days < 18 * 365:
-            await message.answer(t("onboarding_birth_invalid", "ru"))
-            return
-    except ValueError:
-        await message.answer(t("onboarding_birth_format", "ru"))
-        return
-    await state.update_data(birth_date=text)
-    await message.answer(
-        t("onboarding_age_confirm", "ru"),
-        reply_markup=yes_no_kb(),
-    )
-    await state.set_state(OnboardingState.age_confirm)
-
-
-@router.message(OnboardingState.age_confirm, F.text)
-async def onboarding_age_confirm(message: Message, state: FSMContext) -> None:
-    if message.text not in (CONSENT_YES_RU, CONSENT_YES_EN):
-        await message.answer(t("onboarding_age_only", "ru"))
-        return
-    await message.answer(t("onboarding_rules", "ru"), reply_markup=yes_no_kb())
-    await state.set_state(OnboardingState.rules_accept)
-
-
-@router.message(OnboardingState.rules_accept, F.text)
-async def onboarding_rules_accept(message: Message, state: FSMContext) -> None:
-    if message.text not in (CONSENT_YES_RU, CONSENT_YES_EN):
-        await message.answer(t("onboarding_rules_no", "ru"))
-        return
-    await state.update_data(rules_accepted=True)
     builder = InlineKeyboardBuilder()
     builder.add(
         InlineKeyboardButton(text="Русский", callback_data="lang:ru"),
         InlineKeyboardButton(text="English", callback_data="lang:en"),
     )
     await message.answer(
-        t("onboarding_language", "ru"),
+        t("onboarding_language_first", "ru"),
         reply_markup=builder.as_markup(),
     )
     await state.set_state(OnboardingState.language)
+
+
+@router.message(OnboardingState.birth_date, F.text)
+async def onboarding_birth_date(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    locale = data.get("locale", "ru")
+    text = (message.text or "").strip()
+    try:
+        dt = datetime.strptime(text, "%d.%m.%Y")
+        if (datetime.now() - dt).days < 18 * 365:
+            await message.answer(t("onboarding_birth_invalid", locale))
+            return
+    except ValueError:
+        await message.answer(t("onboarding_birth_format", locale))
+        return
+    await state.update_data(birth_date=text)
+    await message.answer(
+        t("onboarding_age_confirm", locale),
+        reply_markup=yes_no_kb(locale),
+    )
+    await state.set_state(OnboardingState.age_confirm)
+
+
+@router.message(OnboardingState.age_confirm, F.text)
+async def onboarding_age_confirm(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    locale = data.get("locale", "ru")
+    if message.text not in (CONSENT_YES_RU, CONSENT_YES_EN):
+        await message.answer(t("onboarding_age_only", locale))
+        return
+    await message.answer(t("onboarding_rules", locale), reply_markup=yes_no_kb(locale))
+    await state.set_state(OnboardingState.rules_accept)
+
+
+@router.message(OnboardingState.rules_accept, F.text)
+async def onboarding_rules_accept(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    locale = data.get("locale", "ru")
+    if message.text not in (CONSENT_YES_RU, CONSENT_YES_EN):
+        await message.answer(t("onboarding_rules_no", locale))
+        return
+    await state.update_data(rules_accepted=True)
+    birth_str = data.get("birth_date", "")
+    try:
+        birth_date = datetime.strptime(birth_str, "%d.%m.%Y")
+    except Exception:
+        birth_date = None
+    async with async_session_factory() as session:
+        user = await get_or_create_user(
+            session,
+            message.from_user.id,
+            username=message.from_user.username,
+            first_name=message.from_user.first_name or "User",
+        )
+        user.birth_date = birth_date
+        user.zodiac = zodiac_from_birth_date(birth_date)
+        user.age_confirmed_18 = True
+        user.rules_accepted = True
+        await session.commit()
+    await state.clear()
+    await message.answer(
+        t("onboarding_done", locale),
+        reply_markup=main_menu_kb(locale),
+    )
 
 
 @router.callback_query(OnboardingState.language, F.data.startswith("lang:"))
@@ -137,45 +141,33 @@ async def onboarding_language(callback: CallbackQuery, state: FSMContext) -> Non
         lang = "ru"
     await callback.answer()
     data = await state.get_data()
-    birth_str = data.get("birth_date", "")
-    try:
-        birth_date = datetime.strptime(birth_str, "%d.%m.%Y")
-    except Exception:
-        birth_date = None
-    async with async_session_factory() as session:
-        user = await get_or_create_user(
-            session,
-            callback.from_user.id,
-            username=callback.from_user.username,
-            first_name=callback.from_user.first_name or data.get("name", "User"),
+    # First step: only language chosen → save locale and ask birth date
+    if not data.get("birth_date"):
+        async with async_session_factory() as session:
+            user = await get_or_create_user(
+                session,
+                callback.from_user.id,
+                username=callback.from_user.username,
+                first_name=callback.from_user.first_name or "User",
+            )
+            user.locale = lang
+            await session.commit()
+        await state.update_data(locale=lang)
+        await callback.message.answer(
+            t("onboarding_welcome", lang),
+            reply_markup=cancel_kb(lang),
         )
-        user.first_name = data.get("name", user.first_name)
-        user.photo_file_id = data.get("photo_file_id")
-        user.birth_date = birth_date
-        user.age_confirmed_18 = True
-        user.rules_accepted = True
-        user.locale = lang
-        await session.commit()
-    await state.clear()
-    await callback.message.answer(
-        t("onboarding_done", lang),
-        reply_markup=main_menu_kb(lang),
-    )
+        await state.set_state(OnboardingState.birth_date)
+        return
+    # Should not reach here: language is now always first step
 
 
 @router.message(
-    (OnboardingState.name, OnboardingState.photo, OnboardingState.birth_date, OnboardingState.age_confirm, OnboardingState.rules_accept),
-    F.text == "❌ Отмена",
-)
-@router.message(
-    (OnboardingState.name, OnboardingState.photo, OnboardingState.birth_date, OnboardingState.age_confirm, OnboardingState.rules_accept),
-    F.text == "❌ No",
+    StateFilter(OnboardingState.birth_date, OnboardingState.age_confirm, OnboardingState.rules_accept),
+    F.text.in_({"❌ Отмена", "❌ No"}),
 )
 async def onboarding_cancel(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    locale = data.get("locale", "ru")
     await state.clear()
-    await message.answer(t("onboarding_cancel", "ru"), reply_markup=ReplyKeyboardRemove())
-
-
-@router.message(OnboardingState.photo, ~F.photo)
-async def onboarding_photo_invalid(message: Message) -> None:
-    await message.answer(t("onboarding_photo_invalid", "ru"))
+    await message.answer(t("onboarding_cancel", locale), reply_markup=ReplyKeyboardRemove())

@@ -4,12 +4,15 @@ from sqlalchemy import text
 
 logger = logging.getLogger(__name__)
 
-# Колонки, добавленные по IMPROVEMENTS: locale, геолокация
+# Колонки, добавленные по IMPROVEMENTS: locale, геолокация; фильмы/сериалы/музыка отдельно
 USER_ADD_COLUMNS = [
     ("locale", "VARCHAR(5)", "DEFAULT 'ru'"),
     ("latitude", "FLOAT", "NULL"),
     ("longitude", "FLOAT", "NULL"),
     ("location_updated_at", "DATETIME", "NULL"),
+    ("movies", "VARCHAR(1024)", "NULL"),
+    ("series", "VARCHAR(1024)", "NULL"),
+    ("music", "VARCHAR(1024)", "NULL"),
 ]
 
 

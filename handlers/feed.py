@@ -12,7 +12,7 @@ from db.database import async_session_factory
 from db.models import User, Like, Match
 from services.user_service import get_user_by_telegram_id, count_likes_today
 from services.match_service import like_exists, create_match_if_mutual
-from services.feed_service import haversine_km, format_distance_km
+from services.feed_service import haversine_km, format_distance_km, gender_emoji
 from config import get_config
 from keyboards.common import main_menu_kb
 from keyboards.feed import feed_actions_kb
@@ -90,7 +90,8 @@ async def _get_next_feed_user(
 
 
 def _card_text(user: User, locale: str = "ru", distance_km: Optional[float] = None) -> str:
-    parts = [f"👤 {user.display_name or user.first_name}, {user.age}"]
+    em = gender_emoji(user.gender)
+    parts = [f"{em} {user.display_name or user.first_name}, {user.age}"]
     if distance_km is not None:
         parts.append(format_distance_km(distance_km, locale))
     if user.city:

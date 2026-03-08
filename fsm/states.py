@@ -3,8 +3,6 @@ from aiogram.fsm.state import State, StatesGroup
 
 
 class OnboardingState(StatesGroup):
-    name = State()
-    photo = State()
     birth_date = State()
     age_confirm = State()
     rules_accept = State()
@@ -12,16 +10,17 @@ class OnboardingState(StatesGroup):
 
 
 class ProfileState(StatesGroup):
+    choose_field = State()
     display_name = State()
-    age = State()
     gender = State()
     looking_for = State()
     city = State()
     photo = State()
     description = State()
     interests = State()
-    movies_music = State()
-    zodiac = State()
+    movies = State()
+    series = State()
+    music = State()
     confirm = State()
 
 

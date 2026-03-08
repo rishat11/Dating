@@ -1,7 +1,52 @@
 """SQLAlchemy models: users, matches, messages, destiny_index, destiny_events."""
-from datetime import datetime
+from datetime import date, datetime
 from enum import Enum
 from typing import Optional
+
+
+def age_from_birth_date(birth_date: Optional[datetime]) -> Optional[int]:
+    """Возраст в полных годах на сегодня. Если birth_date нет — None."""
+    if birth_date is None:
+        return None
+    today = date.today()
+    bd = birth_date.date() if hasattr(birth_date, "date") else birth_date
+    age = today.year - bd.year
+    if (today.month, today.day) < (bd.month, bd.day):
+        age -= 1
+    return age
+
+
+# Границы знаков зодиака (тропический зодиак): день начала (месяц, день) и ключ знака по порядку года
+_ZODIAC_BOUNDS = [
+    ((1, 20), "aquarius"),   # Водолей
+    ((2, 19), "pisces"),     # Рыбы
+    ((3, 21), "aries"),      # Овен
+    ((4, 20), "taurus"),     # Телец
+    ((5, 21), "gemini"),     # Близнецы
+    ((6, 21), "cancer"),     # Рак
+    ((7, 23), "leo"),        # Лев
+    ((8, 23), "virgo"),      # Дева
+    ((9, 23), "libra"),      # Весы
+    ((10, 23), "scorpio"),   # Скорпион
+    ((11, 22), "sagittarius"),  # Стрелец
+    ((12, 22), "capricorn"),   # Козерог
+]
+
+
+def zodiac_from_birth_date(birth_date: Optional[datetime]) -> Optional[str]:
+    """Знак зодиака по дате рождения (ключ для i18n: capricorn, aquarius, ...)."""
+    if birth_date is None:
+        return None
+    bd = birth_date.date() if hasattr(birth_date, "date") else birth_date
+    m, d = bd.month, bd.day
+    # Козерог: 22.12 — 19.01
+    if (m, d) >= (12, 22) or (m, d) < (1, 20):
+        return "capricorn"
+    last = "aquarius"
+    for (sm, sd), sign in _ZODIAC_BOUNDS:
+        if (m, d) >= (sm, sd):
+            last = sign
+    return last
 
 from sqlalchemy import (
     Boolean,
@@ -69,7 +114,10 @@ class User(Base):
     profile_photo_file_id: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     interests: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)  # comma-separated tags
-    movies_music: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
+    movies_music: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)  # deprecated, use movies/series/music
+    movies: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
+    series: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
+    music: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
     zodiac: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     profile_filled: Mapped[bool] = mapped_column(Boolean, default=False)
 

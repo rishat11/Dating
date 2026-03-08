@@ -54,9 +54,9 @@ async def settings_open(message: Message, state: FSMContext) -> None:
     builder.row(
         InlineKeyboardButton(text=t("settings_delete_account", locale), callback_data="settings:delete"),
     )
-    builder.row(
-        InlineKeyboardButton(text=t("settings_privacy", locale), url=PRIVACY_URL),
-    )
+    # builder.row(
+    #     InlineKeyboardButton(text=t("settings_privacy", locale), url=PRIVACY_URL),
+    # )
 
     text = (
         t("settings_title", locale) + "\n\n"

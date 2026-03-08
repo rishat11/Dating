@@ -6,7 +6,8 @@ from i18n import t
 
 def test_t_ru_default():
     s = t("onboarding_welcome")
-    assert "имя" in s.lower() or "name" in s.lower() or "обращаться" in s.lower() or "address" in s.lower()
+    # onboarding_welcome asks for date of birth (no name/photo in onboarding)
+    assert "дату" in s.lower() or "рождения" in s.lower() or "добро" in s.lower() or "регистрац" in s.lower()
 
 
 def test_t_explicit_ru():
@@ -19,7 +20,7 @@ def test_t_explicit_ru():
 
 def test_t_explicit_en():
     s = t("onboarding_welcome", locale="en")
-    assert "Welcome" in s or "name" in s.lower()
+    assert "Welcome" in s or "date" in s.lower() or "birth" in s.lower()
     s2 = t("menu_profile", locale="en")
     assert "Profile" in s2
 

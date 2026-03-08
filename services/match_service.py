@@ -2,7 +2,7 @@
 from typing import List, Optional
 
 from sqlalchemy import select, and_, or_
-from sqlalchemy.orm import aliased
+from sqlalchemy.orm import aliased, selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import User, Match, Like, MatchStatus
@@ -56,11 +56,13 @@ async def create_match_if_mutual(
 
 
 async def get_user_matches(session: AsyncSession, user_id: int) -> List[Match]:
-    """Active matches for user; exclude matches where partner has deleted_at set."""
+    """Active matches for user; exclude matches where partner has deleted_at set.
+    Eager-loads user_1 and user_2 so partner_of() can be used after session is closed."""
     u1 = aliased(User)
     u2 = aliased(User)
     result = await session.execute(
         select(Match)
+        .options(selectinload(Match.user_1), selectinload(Match.user_2))
         .join(u1, Match.user_1_id == u1.id)
         .join(u2, Match.user_2_id == u2.id)
         .where(
@@ -79,8 +81,11 @@ async def get_user_matches(session: AsyncSession, user_id: int) -> List[Match]:
 async def get_match_by_id_for_user(
     session: AsyncSession, match_id: int, user_id: int
 ) -> Optional[Match]:
+    """Load match by id for user; eager-loads user_1 and user_2 so partner_of() can be used without lazy load (avoids MissingGreenlet in async)."""
     result = await session.execute(
-        select(Match).where(
+        select(Match)
+        .options(selectinload(Match.user_1), selectinload(Match.user_2))
+        .where(
             Match.id == match_id,
             (Match.user_1_id == user_id) | (Match.user_2_id == user_id),
             Match.status == MatchStatus.ACTIVE.value,

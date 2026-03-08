@@ -1,4 +1,4 @@
-"""Feed service: Haversine distance, format distance for display."""
+"""Feed service: Haversine distance, format distance for display, gender emoji."""
 import math
 from typing import Optional, Tuple
 
@@ -6,6 +6,19 @@ from sqlalchemy import select, and_, func, case
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import User, Like
+
+
+def gender_emoji(gender: Optional[str]) -> str:
+    """Один нейтральный эмодзи пола рядом с именем/возрастом: голубой — мужской, розовый — женский."""
+    s = (gender or "").strip().upper()
+    if not s:
+        return "⚪"
+    c = s[0]
+    if c in ("M", "М"):
+        return "🔵"
+    if c in ("F", "Ж"):
+        return "💗"
+    return "⚪"
 
 
 # Earth radius in km

@@ -26,23 +26,39 @@ from config import get_config
 from services.rate_limit import check_rate_limit
 from services.contact_moderation import has_contact_markers
 from services.audit import audit_block, audit_report, audit_chat_ended, audit_message_rejected_contact
+from services.feed_service import gender_emoji
 
 logger = logging.getLogger(__name__)
 router = Router(name="chat")
 
+# Порог первого разблокировки (плейлист); блок «Разблокировки» показываем только при percent >= этого значения
+UNLOCK_FIRST_PERCENT = 16
 
-async def _chat_header(session, match: Match, current_user_id: int, locale: str = "ru") -> str:
+
+def _has_unlocks(current_percent: float) -> bool:
+    """Показывать ли блок «Разблокировки» в чате (хотя бы одна кнопка доступна)."""
+    return current_percent >= UNLOCK_FIRST_PERCENT
+
+
+async def _chat_header(
+    session, match: Match, current_user_id: int, locale: str = "ru", destiny_index=None
+) -> str:
+    """Собирает заголовок чата (имя, прогресс, уровень). destiny_index можно передать, чтобы не дергать БД повторно."""
     partner = match.partner_of(current_user_id)
     if not partner:
         return "Чат"
-    di = await get_or_create_destiny_index(session, match.id)
+    di = destiny_index if destiny_index is not None else await get_or_create_destiny_index(session, match.id)
     pct = round(di.current_percent)
     level_key = get_level_name(di.current_percent)
     level = t(level_key, locale)
     progress = format_progress_bar(di.current_percent)
-    header = t("chat_header", locale, name=partner.display_name or partner.first_name, age=partner.age or "?", progress=progress, level=level)
+    em = gender_emoji(partner.gender)
+    name_with_emoji = f"{em} {partner.display_name or partner.first_name}"
+    header = t("chat_header", locale, name=name_with_emoji, age=partner.age or "?", progress=progress, level=level)
     next_pct, est_msgs = get_next_threshold(di.current_percent)
-    if next_pct <= 100 and est_msgs > 0:
+    if di.current_percent < 15:
+        header += "\n" + t("chat_hint_increase_compatibility", locale)
+    elif next_pct <= 100 and est_msgs > 0:
         header += "\n" + t("chat_to_next_level", locale, pct=next_pct, n=est_msgs)
     return header
 
@@ -70,9 +86,10 @@ async def chats_list(message: Message, state: FSMContext) -> None:
     for m in matches:
         partner = m.partner_of(user.id)
         if partner:
+            em = gender_emoji(partner.gender)
             builder.add(
                 InlineKeyboardButton(
-                    text=f"💬 {partner.display_name or partner.first_name} ({partner.age or '?'})",
+                    text=f"💬 {em} {partner.display_name or partner.first_name} ({partner.age or '?'})",
                     callback_data=f"open_chat:{m.id}",
                 )
             )
@@ -97,9 +114,10 @@ async def chat_open(callback: CallbackQuery, bot: Bot, state: FSMContext) -> Non
         if not match:
             await callback.message.answer(t("chat_not_found", "ru"))
             return
+        partner = match.partner_of(user.id)
         loc = _loc(user)
-        header = await _chat_header(session, match, user.id, loc)
         di = await get_or_create_destiny_index(session, match.id)
+        header = await _chat_header(session, match, user.id, loc, destiny_index=di)
     await state.update_data(active_match_id=match_id)
     await state.set_state(ChatState.in_chat)
     from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -111,33 +129,60 @@ async def chat_open(callback: CallbackQuery, bot: Bot, state: FSMContext) -> Non
         builder.add(InlineKeyboardButton(text=t("chat_challenge", loc), callback_data=f"unlock_challenge:{match_id}"))
     if di.current_percent >= 51:
         builder.add(InlineKeyboardButton(text=t("chat_cloud", loc), callback_data=f"unlock_cloud:{match_id}"))
-    reply_kb = builder.as_markup() if builder.buttons else None
-    await callback.message.answer(
-        header + "\n\n" + t("chat_send_hint", loc),
-        reply_markup=chat_menu_kb(loc),
-    )
-    if reply_kb:
-        await callback.message.answer(t("chat_unlocks", loc), reply_markup=reply_kb)
-
-
-@router.message(ChatState.in_chat, F.text.in_({t("back_to_chats", "ru"), t("back_to_chats", "en")}))
-async def chat_exit(message: Message, state: FSMContext) -> None:
-    await state.clear()
-    async with async_session_factory() as session:
-        user = await get_user_by_telegram_id(session, message.from_user.id)
-        loc = _loc(user) if user else "ru"
-    await message.answer(t("chats_title", loc), reply_markup=main_menu_kb(loc))
-    await chats_list(message, state)
+    has_unlocks = _has_unlocks(di.current_percent)
+    caption = header + "\n\n" + t("chat_send_hint", loc)
+    if partner and getattr(partner, "profile_photo_file_id", None):
+        await callback.message.answer_photo(
+            photo=partner.profile_photo_file_id,
+            caption=caption,
+            reply_markup=chat_menu_kb(loc),
+        )
+    else:
+        await callback.message.answer(
+            caption,
+            reply_markup=chat_menu_kb(loc),
+        )
+    if has_unlocks:
+        await callback.message.answer(t("chat_unlocks", loc), reply_markup=builder.as_markup())
 
 
 @router.message(ChatState.in_chat, F.text)
 async def chat_text(message: Message, bot: Bot, state: FSMContext) -> None:
+    # «Назад к чатам» — одна сессия БД, один state.clear(), без повторного вызова chats_list
+    async with async_session_factory() as session:
+        user = await get_user_by_telegram_id(session, message.from_user.id)
+        loc = _loc(user) if user else "ru"
+        back_text = (t("back_to_chats", loc) or "").strip()
+        if (message.text or "").strip() == back_text:
+            await state.clear()
+            if not user or not user.is_registered():
+                await message.answer(t("chat_register_first", loc), reply_markup=main_menu_kb(loc))
+                return
+            matches = await get_user_matches(session, user.id)
+            if not matches:
+                await message.answer(t("chat_no_chats", loc), reply_markup=main_menu_kb(loc))
+                return
+            from aiogram.utils.keyboard import InlineKeyboardBuilder
+            from aiogram.types import InlineKeyboardButton
+            builder = InlineKeyboardBuilder()
+            for m in matches:
+                partner = m.partner_of(user.id)
+                if partner:
+                    em = gender_emoji(partner.gender)
+                    builder.add(
+                        InlineKeyboardButton(
+                            text=f"💬 {em} {partner.display_name or partner.first_name} ({partner.age or '?'})",
+                            callback_data=f"open_chat:{m.id}",
+                        )
+                    )
+            await message.answer(t("chats_title", loc), reply_markup=main_menu_kb(loc))
+            await message.answer(t("chat_choose", loc), reply_markup=builder.as_markup())
+            return
+
     data = await state.get_data()
     match_id = data.get("active_match_id")
     if not match_id:
-        async with async_session_factory() as session:
-            user = await get_user_by_telegram_id(session, message.from_user.id)
-            await message.answer(t("chat_choose_from_list", _loc(user) if user else "ru"))
+        await message.answer(t("chat_choose_from_list", loc))
         return
     config = get_config()
     async with async_session_factory() as session:
