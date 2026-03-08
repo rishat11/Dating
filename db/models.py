@@ -210,10 +210,12 @@ class Message(Base):
     sender_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     type: Mapped[str] = mapped_column(String(20), default=MessageType.TEXT.value)
     length: Mapped[int] = mapped_column(Integer, default=0)
+    text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     text_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     file_id: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     duration_seconds: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    recipient_delivered_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
     match: Mapped["Match"] = relationship("Match", back_populates="messages")
 

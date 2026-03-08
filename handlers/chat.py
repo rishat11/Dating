@@ -19,6 +19,11 @@ from services.destiny_service import (
 )
 from services.destiny_queue import enqueue_destiny_recalc
 from services.unlocks import get_playlist_stub, get_next_challenge
+from services.chat_service import (
+    deliver_message_to_partner,
+    get_undelivered_messages,
+    send_pending_message_to_viewer,
+)
 from fsm.states import ChatState
 from keyboards.common import main_menu_kb
 from keyboards.chat import chat_menu_kb, report_block_kb
@@ -27,7 +32,6 @@ from config import get_config
 from services.rate_limit import check_rate_limit
 from services.contact_moderation import has_contact_markers
 from services.audit import audit_block, audit_report, audit_chat_ended, audit_message_rejected_contact
-from services.chat_service import get_previous_sender_id
 from services.feed_service import gender_emoji
 
 logger = logging.getLogger(__name__)
@@ -159,6 +163,17 @@ async def chat_open(callback: CallbackQuery, bot: Bot, state: FSMContext) -> Non
     await callback.message.answer("💬", reply_markup=chat_menu_kb(loc))
     if has_unlocks:
         await callback.message.answer(t("chat_unlocks", loc), reply_markup=builder.as_markup())
+    # Show any messages that arrived while user was in another chat
+    async with async_session_factory() as session:
+        match = await get_match_by_id_for_user(session, match_id, user.id)
+        if match:
+            partner = match.partner_of(user.id)
+            sender_name = (partner.display_name or partner.first_name) if partner else ""
+            undelivered = await get_undelivered_messages(session, match_id, user.id)
+            for msg in undelivered:
+                await send_pending_message_to_viewer(
+                    session, bot, msg, sender_name, loc, callback.from_user.id
+                )
 
 
 @router.message(ChatState.in_chat, F.text)
@@ -223,6 +238,7 @@ async def chat_text(message: Message, bot: Bot, state: FSMContext) -> None:
             sender_id=user.id,
             type=MessageType.TEXT.value,
             length=len(message.text or ""),
+            text=message.text,
             telegram_message_id=message.message_id,
         )
         session.add(msg)
@@ -236,11 +252,10 @@ async def chat_text(message: Message, bot: Bot, state: FSMContext) -> None:
             msg_type=MessageType.TEXT.value,
             length=len(message.text or ""),
         )
-        partner_loc = _loc(partner)
-        prev_sender = await get_previous_sender_id(session, match.id, msg.id)
-        show_separator = prev_sender is None or prev_sender != user.id
-        body = (t("chat_separator", partner_loc) + "\n\n" + (message.text or "")) if show_separator else (message.text or "")
-        await bot.send_message(partner.telegram_id, body)
+        sender_name = user.display_name or user.first_name
+        await deliver_message_to_partner(
+            session, bot, state.storage, match.id, partner, msg, sender_name, _loc(partner)
+        )
 
 
 @router.message(ChatState.in_chat, F.photo)
@@ -267,11 +282,10 @@ async def chat_photo(message: Message, bot: Bot, state: FSMContext) -> None:
         await session.commit()
         await session.refresh(msg)
         enqueue_destiny_recalc(match.id, msg.id, sender_id=user.id, msg_type=MessageType.PHOTO.value)
-        partner_loc = _loc(partner)
-        prev_sender = await get_previous_sender_id(session, match.id, msg.id)
-        show_separator = prev_sender is None or prev_sender != user.id
-        caption = t("chat_separator", partner_loc) if show_separator else None
-        await bot.send_photo(partner.telegram_id, photo=photo.file_id, caption=caption)
+        sender_name = user.display_name or user.first_name
+        await deliver_message_to_partner(
+            session, bot, state.storage, match.id, partner, msg, sender_name, _loc(partner)
+        )
 
 
 @router.message(ChatState.in_chat, F.voice)
@@ -306,11 +320,44 @@ async def chat_voice(message: Message, bot: Bot, state: FSMContext) -> None:
             msg_type=MessageType.VOICE.value,
             duration_seconds=duration,
         )
-        partner_loc = _loc(partner)
-        prev_sender = await get_previous_sender_id(session, match.id, msg.id)
-        show_separator = prev_sender is None or prev_sender != user.id
-        caption = t("chat_separator", partner_loc) if show_separator else None
-        await bot.send_voice(partner.telegram_id, voice=voice.file_id, caption=caption)
+        sender_name = user.display_name or user.first_name
+        await deliver_message_to_partner(
+            session, bot, state.storage, match.id, partner, msg, sender_name, _loc(partner)
+        )
+
+
+@router.message(ChatState.in_chat, F.animation)
+async def chat_animation(message: Message, bot: Bot, state: FSMContext) -> None:
+    """GIF (animation) in chat: save and forward to partner."""
+    data = await state.get_data()
+    match_id = data.get("active_match_id")
+    if not match_id:
+        return
+    async with async_session_factory() as session:
+        user = await get_user_by_telegram_id(session, message.from_user.id)
+        match = await get_match_by_id_for_user(session, match_id, user.id)
+        if not match or not match.partner_of(user.id):
+            return
+        partner = match.partner_of(user.id)
+        anim = message.animation
+        file_id = anim.file_id if anim else None
+        if not file_id:
+            return
+        msg = MsgModel(
+            match_id=match.id,
+            sender_id=user.id,
+            type=MessageType.ANIMATION.value,
+            file_id=file_id,
+            telegram_message_id=message.message_id,
+        )
+        session.add(msg)
+        await session.commit()
+        await session.refresh(msg)
+        enqueue_destiny_recalc(match.id, msg.id, sender_id=user.id, msg_type=MessageType.ANIMATION.value)
+        sender_name = user.display_name or user.first_name
+        await deliver_message_to_partner(
+            session, bot, state.storage, match.id, partner, msg, sender_name, _loc(partner)
+        )
 
 
 @router.message(ChatState.in_chat, F.sticker)
@@ -336,10 +383,9 @@ async def chat_sticker(message: Message, bot: Bot, state: FSMContext) -> None:
         await session.commit()
         await session.refresh(msg)
         enqueue_destiny_recalc(match.id, msg.id, sender_id=user.id, msg_type=MessageType.STICKER.value)
-        partner_loc = _loc(partner)
-        await bot.send_sticker(
-            partner.telegram_id,
-            sticker=message.sticker.file_id,
+        sender_name = user.display_name or user.first_name
+        await deliver_message_to_partner(
+            session, bot, state.storage, match.id, partner, msg, sender_name, _loc(partner)
         )
 
 
@@ -365,6 +411,7 @@ async def _deliver_text_as_chat(
         sender_id=user.id,
         type=MessageType.TEXT.value,
         length=len(message.text or ""),
+        text=message.text,
         telegram_message_id=message.message_id,
     )
     session.add(msg)
@@ -378,11 +425,10 @@ async def _deliver_text_as_chat(
         msg_type=MessageType.TEXT.value,
         length=len(message.text or ""),
     )
-    partner_loc = _loc(partner)
-    prev_sender = await get_previous_sender_id(session, match.id, msg.id)
-    show_separator = prev_sender is None or prev_sender != user.id
-    body = (t("chat_separator", partner_loc) + "\n\n" + (message.text or "")) if show_separator else (message.text or "")
-    await bot.send_message(partner.telegram_id, body)
+    sender_name = user.display_name or user.first_name
+    await deliver_message_to_partner(
+        session, bot, state.storage, match.id, partner, msg, sender_name, _loc(partner)
+    )
     return True
 
 
@@ -436,11 +482,10 @@ async def chat_photo_fallback(message: Message, bot: Bot, state: FSMContext) -> 
         await session.commit()
         await session.refresh(msg)
         enqueue_destiny_recalc(match.id, msg.id, sender_id=user.id, msg_type=MessageType.PHOTO.value)
-        partner_loc = _loc(partner)
-        prev_sender = await get_previous_sender_id(session, match.id, msg.id)
-        show_separator = prev_sender is None or prev_sender != user.id
-        caption = t("chat_separator", partner_loc) if show_separator else None
-        await bot.send_photo(partner.telegram_id, photo=photo.file_id, caption=caption)
+        sender_name = user.display_name or user.first_name
+        await deliver_message_to_partner(
+            session, bot, state.storage, match.id, partner, msg, sender_name, _loc(partner)
+        )
 
 
 @router.message(F.voice, NotInChatState())
@@ -475,11 +520,10 @@ async def chat_voice_fallback(message: Message, bot: Bot, state: FSMContext) -> 
         enqueue_destiny_recalc(
             match.id, msg.id, sender_id=user.id, msg_type=MessageType.VOICE.value, duration_seconds=duration
         )
-        partner_loc = _loc(partner)
-        prev_sender = await get_previous_sender_id(session, match.id, msg.id)
-        show_separator = prev_sender is None or prev_sender != user.id
-        caption = t("chat_separator", partner_loc) if show_separator else None
-        await bot.send_voice(partner.telegram_id, voice=voice.file_id, caption=caption)
+        sender_name = user.display_name or user.first_name
+        await deliver_message_to_partner(
+            session, bot, state.storage, match.id, partner, msg, sender_name, _loc(partner)
+        )
 
 
 @router.message(F.sticker, NotInChatState())
@@ -509,10 +553,47 @@ async def chat_sticker_fallback(message: Message, bot: Bot, state: FSMContext) -
         await session.commit()
         await session.refresh(msg)
         enqueue_destiny_recalc(match.id, msg.id, sender_id=user.id, msg_type=MessageType.STICKER.value)
-        partner_loc = _loc(partner)
-        await bot.send_sticker(
-            partner.telegram_id,
-            sticker=message.sticker.file_id,
+        sender_name = user.display_name or user.first_name
+        await deliver_message_to_partner(
+            session, bot, state.storage, match.id, partner, msg, sender_name, _loc(partner)
+        )
+
+
+@router.message(F.animation, NotInChatState())
+async def chat_animation_fallback(message: Message, bot: Bot, state: FSMContext) -> None:
+    """GIF when state was lost: single match → treat as chat message."""
+    async with async_session_factory() as session:
+        user = await get_user_by_telegram_id(session, message.from_user.id)
+        if not user or not user.is_registered():
+            return
+        matches = await get_user_matches(session, user.id)
+        if len(matches) != 1:
+            return
+        match = matches[0]
+        match_id = match.id
+        await state.update_data(active_match_id=match_id)
+        await state.set_state(ChatState.in_chat)
+        partner = match.partner_of(user.id)
+        if not partner:
+            return
+        anim = message.animation
+        file_id = anim.file_id if anim else None
+        if not file_id:
+            return
+        msg = MsgModel(
+            match_id=match.id,
+            sender_id=user.id,
+            type=MessageType.ANIMATION.value,
+            file_id=file_id,
+            telegram_message_id=message.message_id,
+        )
+        session.add(msg)
+        await session.commit()
+        await session.refresh(msg)
+        enqueue_destiny_recalc(match.id, msg.id, sender_id=user.id, msg_type=MessageType.ANIMATION.value)
+        sender_name = user.display_name or user.first_name
+        await deliver_message_to_partner(
+            session, bot, state.storage, match.id, partner, msg, sender_name, _loc(partner)
         )
 
 

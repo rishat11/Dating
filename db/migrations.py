@@ -1,4 +1,4 @@
-"""One-off migrations for existing databases (add new columns to users)."""
+"""One-off migrations for existing databases (add new columns to users, messages)."""
 import logging
 from sqlalchemy import text
 
@@ -15,20 +15,27 @@ USER_ADD_COLUMNS = [
     ("music", "VARCHAR(1024)", "NULL"),
 ]
 
+# Колонки для разделения чатов: хранение текста и момент доставки получателю
+MESSAGES_ADD_COLUMNS = [
+    ("text", "TEXT", "NULL"),
+    ("recipient_delivered_at", "DATETIME", "NULL"),
+]
+
+
+def _get_existing_columns(conn, table_name: str, is_sqlite: bool):
+    if is_sqlite:
+        r = conn.execute(text(f"PRAGMA table_info({table_name})"))
+        return {row[1] for row in r}
+    r = conn.execute(text(
+        "SELECT column_name FROM information_schema.columns WHERE table_name = :t"
+    ), {"t": table_name})
+    return {row[0] for row in r}
+
 
 def _add_user_columns_sync(conn):
     """Sync: add missing columns to users (SQLite/Postgres compatible)."""
     is_sqlite = conn.dialect.name == "sqlite"
-    if is_sqlite:
-        r = conn.execute(text("PRAGMA table_info(users)"))
-        existing = {row[1] for row in r}
-    else:
-        # PostgreSQL
-        r = conn.execute(text(
-            "SELECT column_name FROM information_schema.columns WHERE table_name = 'users'"
-        ))
-        existing = {row[0] for row in r}
-
+    existing = _get_existing_columns(conn, "users", is_sqlite)
     for col_name, col_type, suffix in USER_ADD_COLUMNS:
         if col_name in existing:
             continue
@@ -37,7 +44,20 @@ def _add_user_columns_sync(conn):
         logger.info("Migration: added column users.%s", col_name)
 
 
+def _add_messages_columns_sync(conn):
+    """Add text and recipient_delivered_at to messages (chat separation)."""
+    is_sqlite = conn.dialect.name == "sqlite"
+    existing = _get_existing_columns(conn, "messages", is_sqlite)
+    for col_name, col_type, suffix in MESSAGES_ADD_COLUMNS:
+        if col_name in existing:
+            continue
+        sql = f"ALTER TABLE messages ADD COLUMN {col_name} {col_type} {suffix}"
+        conn.execute(text(sql))
+        logger.info("Migration: added column messages.%s", col_name)
+
+
 async def run_migrations(engine):
-    """Run pending migrations (add new user columns if missing)."""
+    """Run pending migrations (add new columns if missing)."""
     async with engine.begin() as conn:
         await conn.run_sync(_add_user_columns_sync)
+        await conn.run_sync(_add_messages_columns_sync)
