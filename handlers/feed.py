@@ -5,11 +5,11 @@ from typing import Optional, List
 from aiogram import Bot, F, Router
 from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.context import FSMContext
-from sqlalchemy import select, func
+from sqlalchemy import select, func, or_, and_, case
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.database import async_session_factory
-from db.models import User, Like, Match
+from db.models import User, Like, Match, MatchStatus
 from services.user_service import get_user_by_telegram_id, count_likes_today
 from services.match_service import like_exists, create_match_if_mutual
 from services.feed_service import haversine_km, format_distance_km, gender_emoji
@@ -39,16 +39,29 @@ async def _get_next_feed_user(
     gender_filter: Optional[str] = None,
     city_filter: Optional[str] = None,
 ) -> Optional[tuple[User, Optional[float]]]:
-    """Return (user, distance_km or None). When viewer has coords: sort by distance (with coords first)."""
+    """Return (user, distance_km or None). When viewer has coords: sort by distance (with coords first).
+    Exclude: active match partners and users we've liked."""
     looking = (viewer.looking_for or "все").lower()
-    subq = select(Like.receiver_id).where(Like.sender_id == viewer_id)
+    active_partners = await session.execute(
+        select(
+            case((Match.user_1_id == viewer_id, Match.user_2_id), else_=Match.user_1_id)
+        ).select_from(Match).where(
+            or_(Match.user_1_id == viewer_id, Match.user_2_id == viewer_id),
+            Match.status == MatchStatus.ACTIVE.value,
+        )
+    )
+    active_ids = set(active_partners.scalars().all())
+    liked = await session.execute(select(Like.receiver_id).where(Like.sender_id == viewer_id))
+    liked_ids = set(liked.scalars().all())
+    exclude_ids = active_ids | liked_ids
     base_q = (
         select(User)
         .where(User.id != viewer_id)
         .where(User.deleted_at.is_(None))
         .where(User.profile_filled == True)
-        .where(User.id.not_in(subq))
     )
+    if exclude_ids:
+        base_q = base_q.where(User.id.not_in(exclude_ids))
     if min_age is not None:
         base_q = base_q.where(User.age >= min_age)
     if max_age is not None:

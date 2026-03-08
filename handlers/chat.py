@@ -8,9 +8,9 @@ from aiogram.fsm.context import FSMContext
 from aiogram.filters import Filter
 
 from db.database import async_session_factory
-from db.models import User, Match, Message as MsgModel, MessageType
+from db.models import User, Match, MatchStatus, Message as MsgModel, MessageType
 from services.user_service import get_user_by_telegram_id
-from services.match_service import get_user_matches, get_match_by_id_for_user
+from services.match_service import get_user_matches, get_match_by_id_for_user, delete_match
 from services.destiny_service import (
     get_or_create_destiny_index,
     format_progress_bar,
@@ -170,9 +170,12 @@ async def chat_open(callback: CallbackQuery, bot: Bot, state: FSMContext) -> Non
             partner = match.partner_of(user.id)
             sender_name = (partner.display_name or partner.first_name) if partner else ""
             undelivered = await get_undelivered_messages(session, match_id, user.id)
-            for msg in undelivered:
+            for i, msg in enumerate(undelivered):
+                # Показываем "От {name}" только у первого сообщения в блоке от одного отправителя
+                show_sender = i == 0 or msg.sender_id != undelivered[i - 1].sender_id
                 await send_pending_message_to_viewer(
-                    session, bot, msg, sender_name, loc, callback.from_user.id
+                    session, bot, msg, sender_name, loc, callback.from_user.id,
+                    show_sender_name=show_sender,
                 )
 
 
@@ -599,8 +602,6 @@ async def chat_animation_fallback(message: Message, bot: Bot, state: FSMContext)
 
 @router.callback_query(F.data.startswith("block:"))
 async def chat_block(callback: CallbackQuery, bot: Bot, state: FSMContext) -> None:
-    from datetime import datetime
-    from db.models import MatchStatus
     if not callback.data:
         return
     try:
@@ -616,12 +617,15 @@ async def chat_block(callback: CallbackQuery, bot: Bot, state: FSMContext) -> No
         match = await session.get(Match, match_id)
         u = await get_user_by_telegram_id(session, callback.from_user.id)
         if match and match.status == MatchStatus.ACTIVE.value:
-            match.status = MatchStatus.BLOCKED.value
-            match.blocked_by_id = u.id if u else None
-            match.ended_at = datetime.utcnow()
-            await session.commit()
             if u:
                 audit_block(match_id, match.other_user_id(u.id), u.id)
+            await delete_match(session, match)
+            await session.commit()
+            try:
+                from services.redis_client import redis_delete, DESTINY_CACHE_PREFIX
+                await redis_delete(DESTINY_CACHE_PREFIX + str(match_id))
+            except Exception:
+                pass
     await callback.message.answer(t("chat_blocked", loc), reply_markup=main_menu_kb(loc))
 
 
@@ -673,8 +677,6 @@ async def unlock_cloud(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("end_chat:"))
 async def chat_end(callback: CallbackQuery, bot: Bot, state: FSMContext) -> None:
-    from datetime import datetime
-    from db.models import MatchStatus
     if not callback.data:
         return
     try:
@@ -689,9 +691,13 @@ async def chat_end(callback: CallbackQuery, bot: Bot, state: FSMContext) -> None
     async with async_session_factory() as session:
         match = await session.get(Match, match_id)
         if match and match.status == MatchStatus.ACTIVE.value:
-            match.status = MatchStatus.ENDED.value
-            match.ended_at = datetime.utcnow()
-            await session.commit()
             if user:
                 audit_chat_ended(match_id, user.id)
+            await delete_match(session, match)
+            await session.commit()
+            try:
+                from services.redis_client import redis_delete, DESTINY_CACHE_PREFIX
+                await redis_delete(DESTINY_CACHE_PREFIX + str(match_id))
+            except Exception:
+                pass
     await callback.message.answer(t("chat_ended", loc), reply_markup=main_menu_kb(loc))

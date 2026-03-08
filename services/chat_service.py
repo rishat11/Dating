@@ -60,7 +60,7 @@ async def deliver_message_to_partner(
     if active_match_id == match_id:
         # Partner is in this chat — send content as before (no "From name" prefix)
         if message_record.type == MessageType.TEXT.value:
-            body = (message_record.text or "").strip() or " "
+            body = (message_record.text or "").strip() or "\u200b"  # Telegram requires non-empty text
             await bot.send_message(partner.telegram_id, body)
         elif message_record.type == MessageType.PHOTO.value and message_record.file_id:
             await bot.send_photo(
@@ -83,7 +83,7 @@ async def deliver_message_to_partner(
                 caption=None,
             )
         else:
-            await bot.send_message(partner.telegram_id, " ")
+            await bot.send_message(partner.telegram_id, "\u200b")
         await session.execute(
             update(MsgModel)
             .where(MsgModel.id == message_record.id)
@@ -130,15 +130,20 @@ async def send_pending_message_to_viewer(
     sender_display_name: str,
     locale: str,
     viewer_telegram_id: int,
+    show_sender_name: bool = True,
 ) -> None:
     """
     Send one pending (undelivered) message to the viewer who opened the chat,
     then set recipient_delivered_at.
+    If show_sender_name is False, content is sent without "От {name}" (only first message in a row from same sender gets it).
     """
-    prefix = t("chat_from", locale, name=sender_display_name)
+    prefix = t("chat_from", locale, name=sender_display_name) if show_sender_name else None
     if message_record.type == MessageType.TEXT.value:
-        body = (message_record.text or "").strip() or " "
-        await bot.send_message(viewer_telegram_id, f"{prefix}\n\n{body}")
+        body = (message_record.text or "").strip() or "\u200b"  # Telegram requires non-empty text
+        text = f"{prefix}\n\n{body}" if prefix else body
+        if not (text and text.strip()):
+            text = "\u200b"
+        await bot.send_message(viewer_telegram_id, text)
     elif message_record.type == MessageType.PHOTO.value and message_record.file_id:
         await bot.send_photo(
             viewer_telegram_id,
@@ -160,7 +165,7 @@ async def send_pending_message_to_viewer(
             caption=prefix,
         )
     else:
-        await bot.send_message(viewer_telegram_id, prefix)
+        await bot.send_message(viewer_telegram_id, (prefix and prefix.strip()) or "\u200b")
     await session.execute(
         update(MsgModel)
         .where(MsgModel.id == message_record.id)

@@ -1,14 +1,15 @@
 """Match and like service."""
 from typing import List, Optional
 
-from sqlalchemy import select, and_, or_
+from sqlalchemy import select, and_, or_, delete
 from sqlalchemy.orm import aliased, selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from db.models import User, Match, Like, MatchStatus
+from db.models import User, Match, Like, MatchStatus, Message, DestinyIndex, DestinyEvent
 
 
 async def get_mutual_match(session: AsyncSession, user_1_id: int, user_2_id: int) -> Optional[Match]:
+    """Return active match for this user pair, or None."""
     a, b = min(user_1_id, user_2_id), max(user_1_id, user_2_id)
     result = await session.execute(
         select(Match).where(
@@ -17,6 +18,17 @@ async def get_mutual_match(session: AsyncSession, user_1_id: int, user_2_id: int
                 Match.status == MatchStatus.ACTIVE.value,
             )
         )
+    )
+    return result.scalar_one_or_none()
+
+
+async def get_match_by_user_pair(
+    session: AsyncSession, user_1_id: int, user_2_id: int
+) -> Optional[Match]:
+    """Return any match for this user pair (any status), or None."""
+    a, b = min(user_1_id, user_2_id), max(user_1_id, user_2_id)
+    result = await session.execute(
+        select(Match).where((Match.user_1_id == a) & (Match.user_2_id == b))
     )
     return result.scalar_one_or_none()
 
@@ -31,16 +43,18 @@ async def like_exists(session: AsyncSession, sender_id: int, receiver_id: int) -
 async def create_match_if_mutual(
     session: AsyncSession, sender_id: int, receiver_id: int
 ) -> Optional[Match]:
-    from db.models import DestinyIndex
-    if await like_exists(session, sender_id, receiver_id):
-        return await get_mutual_match(session, sender_id, receiver_id)
-    like = Like(sender_id=sender_id, receiver_id=receiver_id)
-    session.add(like)
-    await session.flush()
+    existing_active = await get_mutual_match(session, sender_id, receiver_id)
+    if existing_active:
+        return existing_active
+    if not await like_exists(session, sender_id, receiver_id):
+        like = Like(sender_id=sender_id, receiver_id=receiver_id)
+        session.add(like)
+        await session.flush()
     reverse = await like_exists(session, receiver_id, sender_id)
     if not reverse:
         await session.commit()
         return None
+    # Mutual like: create new match (new chat; works after ended chat too)
     match = Match(user_1_id=min(sender_id, receiver_id), user_2_id=max(sender_id, receiver_id))
     session.add(match)
     await session.flush()
@@ -76,6 +90,15 @@ async def get_user_matches(session: AsyncSession, user_id: int) -> List[Match]:
         .order_by(Match.created_at.desc())
     )
     return list(result.scalars().all())
+
+
+async def delete_match(session: AsyncSession, match: Match) -> None:
+    """Delete match and all related rows (messages, destiny_index, destiny_events)."""
+    match_id = match.id
+    await session.execute(delete(DestinyEvent).where(DestinyEvent.match_id == match_id))
+    await session.execute(delete(Message).where(Message.match_id == match_id))
+    await session.execute(delete(DestinyIndex).where(DestinyIndex.match_id == match_id))
+    await session.delete(match)
 
 
 async def get_match_by_id_for_user(
