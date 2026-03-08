@@ -1,0 +1,14 @@
+[run]
+source = .
+omit =
+    venv/*
+    .venv/*
+    tests/*
+    */migrations/*
+    bot/main.py
+
+[report]
+exclude_lines =
+    pragma: no cover
+    def __repr__
+    raise NotImplementedError
