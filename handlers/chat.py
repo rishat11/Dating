@@ -5,6 +5,7 @@ from typing import Optional
 from aiogram import Bot, F, Router
 from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.context import FSMContext
+from aiogram.filters import Filter
 
 from db.database import async_session_factory
 from db.models import User, Match, Message as MsgModel, MessageType
@@ -26,6 +27,7 @@ from config import get_config
 from services.rate_limit import check_rate_limit
 from services.contact_moderation import has_contact_markers
 from services.audit import audit_block, audit_report, audit_chat_ended, audit_message_rejected_contact
+from services.chat_service import get_previous_sender_id
 from services.feed_service import gender_emoji
 
 logger = logging.getLogger(__name__)
@@ -65,6 +67,17 @@ async def _chat_header(
 
 def _loc(user) -> str:
     return getattr(user, "locale", None) or "ru"
+
+
+class NotInChatState(Filter):
+    """True when user is not in ChatState.in_chat (e.g. state lost after bot restart)."""
+
+    async def __call__(self, message: Message, *args: object, **data: object) -> bool:
+        state: Optional[FSMContext] = data.get("state") if data else None
+        if state is None:
+            return True
+        current = await state.get_state()
+        return current != ChatState.in_chat.state
 
 
 @router.message(F.text.in_({t("menu_chats", "ru"), t("menu_chats", "en")}))
@@ -131,17 +144,19 @@ async def chat_open(callback: CallbackQuery, bot: Bot, state: FSMContext) -> Non
         builder.add(InlineKeyboardButton(text=t("chat_cloud", loc), callback_data=f"unlock_cloud:{match_id}"))
     has_unlocks = _has_unlocks(di.current_percent)
     caption = header + "\n\n" + t("chat_send_hint", loc)
+    actions_kb = report_block_kb(match_id, loc).as_markup()
     if partner and getattr(partner, "profile_photo_file_id", None):
         await callback.message.answer_photo(
             photo=partner.profile_photo_file_id,
             caption=caption,
-            reply_markup=chat_menu_kb(loc),
+            reply_markup=actions_kb,
         )
     else:
         await callback.message.answer(
             caption,
-            reply_markup=chat_menu_kb(loc),
+            reply_markup=actions_kb,
         )
+    await callback.message.answer("💬", reply_markup=chat_menu_kb(loc))
     if has_unlocks:
         await callback.message.answer(t("chat_unlocks", loc), reply_markup=builder.as_markup())
 
@@ -222,12 +237,10 @@ async def chat_text(message: Message, bot: Bot, state: FSMContext) -> None:
             length=len(message.text or ""),
         )
         partner_loc = _loc(partner)
-        await bot.send_message(
-            partner.telegram_id,
-            t("chat_from", partner_loc, name=user.display_name or user.first_name) + "\n\n" + (message.text or ""),
-            reply_markup=report_block_kb(match.id, partner_loc).as_markup(),
-        )
-    await message.answer(t("chat_sent", loc))
+        prev_sender = await get_previous_sender_id(session, match.id, msg.id)
+        show_separator = prev_sender is None or prev_sender != user.id
+        body = (t("chat_separator", partner_loc) + "\n\n" + (message.text or "")) if show_separator else (message.text or "")
+        await bot.send_message(partner.telegram_id, body)
 
 
 @router.message(ChatState.in_chat, F.photo)
@@ -255,13 +268,10 @@ async def chat_photo(message: Message, bot: Bot, state: FSMContext) -> None:
         await session.refresh(msg)
         enqueue_destiny_recalc(match.id, msg.id, sender_id=user.id, msg_type=MessageType.PHOTO.value)
         partner_loc = _loc(partner)
-        await bot.send_photo(
-            partner.telegram_id,
-            photo=photo.file_id,
-            caption=t("chat_photo_from", partner_loc, name=user.display_name or user.first_name),
-            reply_markup=report_block_kb(match.id, partner_loc).as_markup(),
-        )
-    await message.answer(t("chat_sent", _loc(user) if user else "ru"))
+        prev_sender = await get_previous_sender_id(session, match.id, msg.id)
+        show_separator = prev_sender is None or prev_sender != user.id
+        caption = t("chat_separator", partner_loc) if show_separator else None
+        await bot.send_photo(partner.telegram_id, photo=photo.file_id, caption=caption)
 
 
 @router.message(ChatState.in_chat, F.voice)
@@ -297,13 +307,10 @@ async def chat_voice(message: Message, bot: Bot, state: FSMContext) -> None:
             duration_seconds=duration,
         )
         partner_loc = _loc(partner)
-        await bot.send_voice(
-            partner.telegram_id,
-            voice=voice.file_id,
-            caption=t("chat_voice_from", partner_loc, name=user.display_name or user.first_name),
-            reply_markup=report_block_kb(match.id, partner_loc).as_markup(),
-        )
-    await message.answer(t("chat_sent", _loc(user) if user else "ru"))
+        prev_sender = await get_previous_sender_id(session, match.id, msg.id)
+        show_separator = prev_sender is None or prev_sender != user.id
+        caption = t("chat_separator", partner_loc) if show_separator else None
+        await bot.send_voice(partner.telegram_id, voice=voice.file_id, caption=caption)
 
 
 @router.message(ChatState.in_chat, F.sticker)
@@ -333,9 +340,180 @@ async def chat_sticker(message: Message, bot: Bot, state: FSMContext) -> None:
         await bot.send_sticker(
             partner.telegram_id,
             sticker=message.sticker.file_id,
-            reply_markup=report_block_kb(match.id, partner_loc).as_markup(),
         )
-    await message.answer(t("chat_sent", _loc(user) if user else "ru"))
+
+
+async def _deliver_text_as_chat(
+    session, bot: Bot, state: FSMContext, message: Message, user, match_id: int
+) -> bool:
+    """Save text message and send to partner. Returns True if delivered."""
+    match = await get_match_by_id_for_user(session, match_id, user.id)
+    if not match or not match.partner_of(user.id):
+        return False
+    partner = match.partner_of(user.id)
+    config = get_config()
+    wait_min = await check_rate_limit(user.id, "chat_msg", config.chat_messages_per_minute, 60)
+    if wait_min is not None:
+        await message.answer(t("rate_limit", _loc(user), min=wait_min))
+        return False
+    if has_contact_markers(message.text or ""):
+        await message.answer(t("contact_warning", _loc(user)))
+        audit_message_rejected_contact(match_id, user.id, length=len(message.text or ""))
+        return False
+    msg = MsgModel(
+        match_id=match.id,
+        sender_id=user.id,
+        type=MessageType.TEXT.value,
+        length=len(message.text or ""),
+        telegram_message_id=message.message_id,
+    )
+    session.add(msg)
+    await session.commit()
+    await session.refresh(msg)
+    enqueue_destiny_recalc(
+        match.id,
+        msg.id,
+        sender_id=user.id,
+        text=message.text,
+        msg_type=MessageType.TEXT.value,
+        length=len(message.text or ""),
+    )
+    partner_loc = _loc(partner)
+    prev_sender = await get_previous_sender_id(session, match.id, msg.id)
+    show_separator = prev_sender is None or prev_sender != user.id
+    body = (t("chat_separator", partner_loc) + "\n\n" + (message.text or "")) if show_separator else (message.text or "")
+    await bot.send_message(partner.telegram_id, body)
+    return True
+
+
+@router.message(F.text, NotInChatState())
+async def chat_text_fallback(message: Message, bot: Bot, state: FSMContext) -> None:
+    """When state was lost (e.g. bot restart), if user has exactly one match, treat message as chat."""
+    back_text = (t("back_to_chats", "ru") or "").strip()
+    if (message.text or "").strip() == back_text:
+        return
+    async with async_session_factory() as session:
+        user = await get_user_by_telegram_id(session, message.from_user.id)
+        if not user or not user.is_registered():
+            return
+        matches = await get_user_matches(session, user.id)
+        if len(matches) != 1:
+            if matches:
+                await message.answer(t("chat_choose_from_list", _loc(user)))
+            return
+        match = matches[0]
+        match_id = match.id
+        await state.update_data(active_match_id=match_id)
+        await state.set_state(ChatState.in_chat)
+        await _deliver_text_as_chat(session, bot, state, message, user, match_id)
+
+
+@router.message(F.photo, NotInChatState())
+async def chat_photo_fallback(message: Message, bot: Bot, state: FSMContext) -> None:
+    async with async_session_factory() as session:
+        user = await get_user_by_telegram_id(session, message.from_user.id)
+        if not user or not user.is_registered():
+            return
+        matches = await get_user_matches(session, user.id)
+        if len(matches) != 1:
+            return
+        match = matches[0]
+        match_id = match.id
+        await state.update_data(active_match_id=match_id)
+        await state.set_state(ChatState.in_chat)
+        partner = match.partner_of(user.id)
+        if not partner:
+            return
+        photo = message.photo[-1]
+        msg = MsgModel(
+            match_id=match.id,
+            sender_id=user.id,
+            type=MessageType.PHOTO.value,
+            file_id=photo.file_id,
+            telegram_message_id=message.message_id,
+        )
+        session.add(msg)
+        await session.commit()
+        await session.refresh(msg)
+        enqueue_destiny_recalc(match.id, msg.id, sender_id=user.id, msg_type=MessageType.PHOTO.value)
+        partner_loc = _loc(partner)
+        prev_sender = await get_previous_sender_id(session, match.id, msg.id)
+        show_separator = prev_sender is None or prev_sender != user.id
+        caption = t("chat_separator", partner_loc) if show_separator else None
+        await bot.send_photo(partner.telegram_id, photo=photo.file_id, caption=caption)
+
+
+@router.message(F.voice, NotInChatState())
+async def chat_voice_fallback(message: Message, bot: Bot, state: FSMContext) -> None:
+    async with async_session_factory() as session:
+        user = await get_user_by_telegram_id(session, message.from_user.id)
+        if not user or not user.is_registered():
+            return
+        matches = await get_user_matches(session, user.id)
+        if len(matches) != 1:
+            return
+        match = matches[0]
+        match_id = match.id
+        await state.update_data(active_match_id=match_id)
+        await state.set_state(ChatState.in_chat)
+        partner = match.partner_of(user.id)
+        if not partner:
+            return
+        voice = message.voice
+        duration = voice.duration if voice else None
+        msg = MsgModel(
+            match_id=match.id,
+            sender_id=user.id,
+            type=MessageType.VOICE.value,
+            file_id=voice.file_id if voice else None,
+            duration_seconds=duration,
+            telegram_message_id=message.message_id,
+        )
+        session.add(msg)
+        await session.commit()
+        await session.refresh(msg)
+        enqueue_destiny_recalc(
+            match.id, msg.id, sender_id=user.id, msg_type=MessageType.VOICE.value, duration_seconds=duration
+        )
+        partner_loc = _loc(partner)
+        prev_sender = await get_previous_sender_id(session, match.id, msg.id)
+        show_separator = prev_sender is None or prev_sender != user.id
+        caption = t("chat_separator", partner_loc) if show_separator else None
+        await bot.send_voice(partner.telegram_id, voice=voice.file_id, caption=caption)
+
+
+@router.message(F.sticker, NotInChatState())
+async def chat_sticker_fallback(message: Message, bot: Bot, state: FSMContext) -> None:
+    async with async_session_factory() as session:
+        user = await get_user_by_telegram_id(session, message.from_user.id)
+        if not user or not user.is_registered():
+            return
+        matches = await get_user_matches(session, user.id)
+        if len(matches) != 1:
+            return
+        match = matches[0]
+        match_id = match.id
+        await state.update_data(active_match_id=match_id)
+        await state.set_state(ChatState.in_chat)
+        partner = match.partner_of(user.id)
+        if not partner:
+            return
+        msg = MsgModel(
+            match_id=match.id,
+            sender_id=user.id,
+            type=MessageType.STICKER.value,
+            file_id=message.sticker.file_id if message.sticker else None,
+            telegram_message_id=message.message_id,
+        )
+        session.add(msg)
+        await session.commit()
+        await session.refresh(msg)
+        enqueue_destiny_recalc(match.id, msg.id, sender_id=user.id, msg_type=MessageType.STICKER.value)
+        partner_loc = _loc(partner)
+        await bot.send_sticker(
+            partner.telegram_id,
+            sticker=message.sticker.file_id,
+        )
 
 
 @router.callback_query(F.data.startswith("block:"))

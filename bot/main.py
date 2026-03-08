@@ -6,6 +6,8 @@ import sys
 from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.fsm.storage.redis import RedisStorage
 
 from config import get_config
 from db.database import init_db
@@ -21,13 +23,30 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _get_fsm_storage():
+    """FSM storage: Redis if REDIS_URL set (state survives restarts), else Memory."""
+    config = get_config()
+    if config.redis_url:
+        try:
+            # state_ttl/data_ttl: keep chat state for 7 days
+            return RedisStorage.from_url(
+                config.redis_url,
+                state_ttl=7 * 24 * 3600,
+                data_ttl=7 * 24 * 3600,
+            )
+        except Exception as e:
+            logger.warning("Redis FSM storage failed, using Memory: %s", e)
+    return MemoryStorage()
+
+
 async def main() -> None:
     config = get_config()
     bot = Bot(
         token=config.bot_token,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
-    dp = Dispatcher()
+    storage = _get_fsm_storage()
+    dp = Dispatcher(storage=storage)
     dp.update.outer_middleware(IdempotencyMiddleware())
     dp.include_router(setup_routers())
 

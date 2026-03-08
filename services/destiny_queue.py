@@ -5,6 +5,7 @@ import logging
 from typing import Optional, Set
 
 from config import get_config
+from i18n import t
 from services.redis_client import (
     get_redis,
     redis_lpush,
@@ -138,34 +139,15 @@ async def _process_one(item: dict) -> None:
                 match = await session.get(Match, match_id)
                 u1 = await session.get(User, match.user_1_id)
                 u2 = await session.get(User, match.user_2_id)
-                conflict_msg = (
-                    "🚨 Индекс заморожен на 3 часа.\n"
-                    "Похоже, в переписке был негатив. Сделайте паузу или отправьте извинение, чтобы разморозить рост."
-                )
+                freeze_hours = config.destiny_freeze_hours
                 for u in (u1, u2):
                     if u and u.telegram_id:
                         try:
+                            loc = (u.locale or "ru").lower()
+                            conflict_msg = t("index_freeze_message", loc, hours=freeze_hours)
                             await _bot.send_message(u.telegram_id, conflict_msg)
                         except Exception as e:
                             logger.warning("Conflict notify: %s", e)
-            # Notify both users if index increased
-            elif _bot and (level_up or (reason and new_pct > (di_before or 0))):
-                match = await session.get(Match, match_id)
-                u1 = await session.get(User, match.user_1_id)
-                u2 = await session.get(User, match.user_2_id)
-                msg_text = (
-                    "━━━━━━━━━━━━━━━━━━━━━━\n"
-                    "✨ ИНДЕКС СУДЬБЫ ПОВЫШЕН! ✨\n"
-                    f"{reason or 'Новый уровень'}\n"
-                    f"Совместимость: {round(new_pct)}%\n"
-                    "━━━━━━━━━━━━━━━━━━━━━━"
-                )
-                for u in (u1, u2):
-                    if u and u.telegram_id:
-                        try:
-                            await _bot.send_message(u.telegram_id, msg_text)
-                        except Exception as e:
-                            logger.warning("Notify destiny raise: %s", e)
             # "Спасите индекс": if partner was silent > 6h, notify partner
             if _bot and sender_id and match:
                 partner_id = match.other_user_id(sender_id)
@@ -183,12 +165,15 @@ async def _process_one(item: dict) -> None:
                         writer = await session.get(User, sender_id)
                         if partner and partner.telegram_id and writer:
                             try:
-                                await _bot.send_message(
-                                    partner.telegram_id,
-                                    f"⚠️ ВНИМАНИЕ! Ваш Индекс Судьбы может падать.\n"
-                                    f"{writer.display_name or writer.first_name} не получал(а) ответа более {int(silence_h)} ч. "
-                                    "Отправьте стикер или голосовое, чтобы поддержать диалог.",
+                                loc = (partner.locale or "ru").lower()
+                                writer_name = writer.display_name or writer.first_name
+                                msg = t(
+                                    "index_may_drop",
+                                    loc,
+                                    writer_name=writer_name,
+                                    hours=int(silence_h),
                                 )
+                                await _bot.send_message(partner.telegram_id, msg)
                             except Exception as e:
                                 logger.warning("Save index notify: %s", e)
     except Exception as e:

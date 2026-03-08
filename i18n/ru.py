@@ -34,9 +34,14 @@ RU = {
     "profile_age_prompt": "Сколько вам полных лет? (число от 18 до 120)",
     "profile_age_invalid": "Укажите возраст от 18 до 120.",
     "profile_age_number": "Введите число.",
-    "profile_gender_prompt": "Ваш пол: М / Ж / другой (напишите текст)",
-    "profile_looking_prompt": "Кого ищете? Напишите: М, Ж или все",
-    "profile_looking_invalid": "Напишите: М, Ж или все",
+    "profile_gender_prompt": "Ваш пол:",
+    "profile_gender_male": "👨 М",
+    "profile_gender_female": "👩 Ж",
+    "profile_gender_other": "⚪ другой",
+    "profile_looking_prompt": "Кого ищете?",
+    "profile_looking_male": "👨 М",
+    "profile_looking_female": "👩 Ж",
+    "profile_looking_all": "💜 Все",
     "profile_city_prompt": "Город (или напишите «не указывать»)",
     "profile_photo_prompt": "Отправьте одно фото для анкеты:",
     "profile_skip_btn": "Пропустить",
@@ -59,6 +64,7 @@ RU = {
     "profile_na": "—",
     "profile_edit_choose": "Что хотите изменить?",
     "profile_edit_done": "Готово",
+    "profile_edit_field_saved": "Изменения сохранены.",
     "profile_edit_current": "Сейчас: {value}",
     "profile_field_name": "Имя",
     "profile_field_photo": "Фото",
@@ -108,8 +114,10 @@ RU = {
     "chat_from": "💬 От {name}:",
     "chat_photo_from": "💬 Фото от {name}",
     "chat_voice_from": "💬 Голосовое от {name}",
+    "chat_separator": "—",
     "chat_sent": "✓ Отправлено",
     "chats_title": "Чаты:",
+    "chat_open_chat_btn": "💬 Перейти в чат",
     "chat_block_btn": "🚫 Заблокировать",
     "chat_report_btn": "⚠️ Жалоба",
     "chat_end_btn": "Завершить чат",
@@ -121,13 +129,18 @@ RU = {
     "chat_hint_increase_compatibility": "Общайтесь больше — так растёт совместимость.",
     "chat_to_next_pct": "До следующего уровня: {pct}%",
 
-    # Destiny (level names)
+    # Compatibility index (level names and notifications)
     "level_strangers": "Незнакомцы",
     "level_acquaintances": "Знакомые",
     "level_kindred": "Близкие по духу",
     "level_potential": "Потенциальная пара",
     "level_half": "Половина",
-    "level_destiny": "Судьба",
+    "level_destiny": "Идеальная пара",
+    "index_raised_title": "✨ ИНДЕКС СОВМЕСТИМОСТИ ПОВЫШЕН! ✨",
+    "index_raised_new_level": "Новый уровень",
+    "index_raised_message": "━━━━━━━━━━━━━━━━━━━━━━\n{title}\n{reason}\nСовместимость: {pct}%\n━━━━━━━━━━━━━━━━━━━━━━",
+    "index_freeze_message": "🚨 Индекс совместимости заморожен на {hours} ч.\nПохоже, в переписке был негатив. Сделайте паузу или отправьте извинение, чтобы разморозить рост.",
+    "index_may_drop": "⚠️ ВНИМАНИЕ! Ваш индекс совместимости может падать.\n{writer_name} не получал(а) ответа более {hours} ч. Отправьте стикер или голосовое, чтобы поддержать диалог.",
 
     # Settings
     "settings_title": "⚙️ Настройки",
@@ -153,7 +166,7 @@ RU = {
     "rate_limit": "Слишком много действий. Подождите {min} мин.",
 
     # Contact moderation
-    "contact_warning": "Не передавайте контакты (телефон, ссылки) до согласованного уровня. Сообщение не отправлено. При повторении индекс может быть заморожен.",
+    "contact_warning": "Не передавайте контакты (телефон, ссылки) до согласованного уровня. Сообщение не отправлено. При повторении индекс совместимости может быть заморожен.",
 
     # Errors
     "error": "Ошибка",

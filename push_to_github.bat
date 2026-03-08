@@ -20,7 +20,7 @@ git status
 set /p OK="Закоммитить и запушить? (y/n): "
 if /i not "%OK%"=="y" exit /b 0
 
-git commit -m "Dating bot: aiogram 3, Destiny Index, i18n, geolocation, settings, Redis, rate limit, audit"
+git commit -m "Dating bot: aiogram 3, Compatibility Index, i18n, geolocation, settings, Redis, rate limit, audit"
 git branch -M main
 git push -u origin main
 

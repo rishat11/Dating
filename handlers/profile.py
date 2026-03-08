@@ -10,7 +10,7 @@ from db.database import async_session_factory
 from db.models import age_from_birth_date, zodiac_from_birth_date
 from services.user_service import get_user_by_telegram_id
 from fsm.states import ProfileState
-from keyboards.common import main_menu_kb, cancel_kb, cancel_skip_kb, profile_edit_menu_kb
+from keyboards.common import main_menu_kb, cancel_kb, cancel_skip_kb, profile_edit_menu_kb, gender_choice_kb, looking_choice_kb
 from i18n import t
 from services.feed_service import gender_emoji
 
@@ -128,7 +128,12 @@ async def profile_edit_choose_field(callback: CallbackQuery, state: FSMContext) 
     if part == "photo":
         text = t(prompt_key, loc)
     skip_fields = ("description", "interests", "movies", "series", "music")
-    reply_markup = cancel_skip_kb(loc) if part in skip_fields else cancel_kb(loc)
+    if part == "gender":
+        reply_markup = gender_choice_kb(loc).as_markup()
+    elif part == "looking_for":
+        reply_markup = looking_choice_kb(loc).as_markup()
+    else:
+        reply_markup = cancel_skip_kb(loc) if part in skip_fields else cancel_kb(loc)
     await callback.message.answer(text, reply_markup=reply_markup)
 
 
@@ -158,39 +163,61 @@ async def profile_display_name(message: Message, state: FSMContext) -> None:
         await _send_edit_menu(message, loc, state)
         return
     await state.update_data(display_name=name)
-    await message.answer(t("profile_gender_prompt", "ru"))
+    loc = "ru"
+    await message.answer(
+        t("profile_gender_prompt", loc),
+        reply_markup=gender_choice_kb(loc).as_markup(),
+    )
     await state.set_state(ProfileState.gender)
 
 
-@router.message(ProfileState.gender, F.text)
-async def profile_gender(message: Message, state: FSMContext) -> None:
-    if message.text and message.text.strip() in _cancel_texts():
-        await state.clear()
-        async with async_session_factory() as session:
-            user = await get_user_by_telegram_id(session, message.from_user.id)
-            loc = _locale(user) if user else "ru"
-        await message.answer(t("profile_cancelled", loc), reply_markup=main_menu_kb(loc))
+def _normalize_gender(value: str) -> str:
+    """Callback value M/F/other -> stored value (M, F, other)."""
+    v = (value or "").strip().lower()
+    if v in ("m", "м"):
+        return "M"
+    if v in ("f", "ж"):
+        return "F"
+    if v == "other" or v == "другой":
+        return "other"
+    return value or ""
+
+
+@router.callback_query(F.data.startswith("profile_gender:"), ProfileState.gender)
+async def profile_gender_callback(callback: CallbackQuery, state: FSMContext) -> None:
+    if not callback.data or not callback.message:
         return
-    g = (message.text or "").strip()[:20]
+    _, value = callback.data.split(":", 1)
+    g = _normalize_gender(value)
+    if not g:
+        await callback.answer()
+        return
+    await callback.answer()
     data = await state.get_data()
     if data.get("edit_mode"):
         async with async_session_factory() as session:
-            user = await get_user_by_telegram_id(session, message.from_user.id)
+            user = await get_user_by_telegram_id(session, callback.from_user.id)
             if user:
                 user.gender = g
                 user.zodiac = zodiac_from_birth_date(user.birth_date)
                 await session.commit()
             loc = _locale(user) if user else "ru"
         await state.update_data(editing_field=None)
-        await _send_edit_menu(message, loc, state)
+        await callback.message.answer(t("profile_edit_field_saved", loc))
+        await _send_edit_menu(callback.message, loc, state)
         return
     await state.update_data(gender=g)
-    await message.answer(t("profile_looking_prompt", "ru"))
+    loc = data.get("locale", "ru")
+    await callback.message.answer(
+        t("profile_looking_prompt", loc),
+        reply_markup=looking_choice_kb(loc).as_markup(),
+    )
     await state.set_state(ProfileState.looking_for)
 
 
-@router.message(ProfileState.looking_for, F.text)
-async def profile_looking_for(message: Message, state: FSMContext) -> None:
+@router.message(ProfileState.gender, F.text)
+async def profile_gender_message(message: Message, state: FSMContext) -> None:
+    """Обработка только отмены; выбор пола — по кнопкам."""
     if message.text and message.text.strip() in _cancel_texts():
         await state.clear()
         async with async_session_factory() as session:
@@ -198,25 +225,66 @@ async def profile_looking_for(message: Message, state: FSMContext) -> None:
             loc = _locale(user) if user else "ru"
         await message.answer(t("profile_cancelled", loc), reply_markup=main_menu_kb(loc))
         return
-    lf = (message.text or "").strip().lower()[:10]
-    if lf not in ("м", "ж", "все", "m", "f", "all"):
-        await message.answer(t("profile_looking_invalid", "ru"))
+    loc = "ru"
+    await message.answer(t("profile_gender_prompt", loc), reply_markup=gender_choice_kb(loc).as_markup())
+
+
+def _normalize_looking(value: str) -> str:
+    """Callback value m/f/all -> stored value (m, f, all)."""
+    v = (value or "").strip().lower()
+    if v in ("m", "м"):
+        return "m"
+    if v in ("f", "ж"):
+        return "f"
+    if v in ("all", "все"):
+        return "all"
+    return value or ""
+
+
+@router.callback_query(F.data.startswith("profile_looking:"), ProfileState.looking_for)
+async def profile_looking_callback(callback: CallbackQuery, state: FSMContext) -> None:
+    if not callback.data or not callback.message:
         return
+    _, value = callback.data.split(":", 1)
+    lf = _normalize_looking(value)
+    if lf not in ("m", "f", "all"):
+        await callback.answer()
+        return
+    await callback.answer()
     data = await state.get_data()
     if data.get("edit_mode"):
         async with async_session_factory() as session:
-            user = await get_user_by_telegram_id(session, message.from_user.id)
+            user = await get_user_by_telegram_id(session, callback.from_user.id)
             if user:
                 user.looking_for = lf
                 user.zodiac = zodiac_from_birth_date(user.birth_date)
                 await session.commit()
             loc = _locale(user) if user else "ru"
         await state.update_data(editing_field=None)
-        await _send_edit_menu(message, loc, state)
+        await callback.message.answer(t("profile_edit_field_saved", loc))
+        await _send_edit_menu(callback.message, loc, state)
         return
     await state.update_data(looking_for=lf)
-    await message.answer(t("profile_city_prompt", "ru"))
+    loc = data.get("locale", "ru")
+    await callback.message.answer(t("profile_city_prompt", loc))
     await state.set_state(ProfileState.city)
+
+
+@router.message(ProfileState.looking_for, F.text)
+async def profile_looking_message(message: Message, state: FSMContext) -> None:
+    """Обработка только отмены; выбор «Ищу» — по кнопкам."""
+    if message.text and message.text.strip() in _cancel_texts():
+        await state.clear()
+        async with async_session_factory() as session:
+            user = await get_user_by_telegram_id(session, message.from_user.id)
+            loc = _locale(user) if user else "ru"
+        await message.answer(t("profile_cancelled", loc), reply_markup=main_menu_kb(loc))
+        return
+    loc = "ru"
+    await message.answer(
+        t("profile_looking_prompt", loc),
+        reply_markup=looking_choice_kb(loc).as_markup(),
+    )
 
 
 @router.message(ProfileState.city, F.text)

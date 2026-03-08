@@ -54,6 +54,28 @@ def inline_yes_no_kb(callback_prefix: str) -> InlineKeyboardBuilder:
     return builder
 
 
+def gender_choice_kb(locale: str = "ru") -> InlineKeyboardBuilder:
+    """Inline keyboard: М, Ж, другой — выбор пола в анкете и при редактировании."""
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text=t("profile_gender_male", locale), callback_data="profile_gender:M"),
+        InlineKeyboardButton(text=t("profile_gender_female", locale), callback_data="profile_gender:F"),
+        InlineKeyboardButton(text=t("profile_gender_other", locale), callback_data="profile_gender:other"),
+    )
+    return builder
+
+
+def looking_choice_kb(locale: str = "ru") -> InlineKeyboardBuilder:
+    """Inline keyboard: М, Ж, Все — кого ищете в анкете и при редактировании."""
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text=t("profile_looking_male", locale), callback_data="profile_looking:m"),
+        InlineKeyboardButton(text=t("profile_looking_female", locale), callback_data="profile_looking:f"),
+        InlineKeyboardButton(text=t("profile_looking_all", locale), callback_data="profile_looking:all"),
+    )
+    return builder
+
+
 def profile_edit_menu_kb(locale: str = "ru") -> InlineKeyboardBuilder:
     """Inline keyboard: what profile field to edit + Done."""
     builder = InlineKeyboardBuilder()
