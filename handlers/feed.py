@@ -3,8 +3,9 @@ import logging
 from typing import Optional, List
 
 from aiogram import Bot, F, Router
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message, CallbackQuery, InputMediaPhoto
 from aiogram.fsm.context import FSMContext
+from aiogram.exceptions import TelegramBadRequest
 from sqlalchemy import select, func, or_, and_, case
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -102,7 +103,13 @@ async def _get_next_feed_user(
     return (user, None)
 
 
-def _card_text(user: User, locale: str = "ru", distance_km: Optional[float] = None) -> str:
+def _card_text(
+    user: User,
+    locale: str = "ru",
+    distance_km: Optional[float] = None,
+    likes_today: Optional[int] = None,
+    likes_limit: Optional[int] = None,
+) -> str:
     em = gender_emoji(user.gender)
     parts = [f"{em} {user.display_name or user.first_name}, {user.age}"]
     if distance_km is not None:
@@ -111,11 +118,66 @@ def _card_text(user: User, locale: str = "ru", distance_km: Optional[float] = No
         parts.append(f"📍 {user.city}")
     if user.description:
         parts.append(user.description[:300] + ("…" if len(user.description) > 300 else ""))
+    if likes_today is not None and likes_limit is not None:
+        parts.append(t("feed_likes_today", locale, count=likes_today, limit=likes_limit))
     return "\n".join(parts)
 
 
-async def _send_card(message: Message, user: User, viewer_id: int, locale: str = "ru", distance_km: Optional[float] = None) -> None:
-    text = _card_text(user, locale, distance_km)
+async def _show_next_card(
+    callback: CallbackQuery,
+    bot: Bot,
+    next_user: User,
+    loc: str,
+    dist: Optional[float],
+    likes_today: int,
+    likes_limit: int,
+) -> None:
+    """Show next feed card by editing the current message when possible, else send new."""
+    card_text = _card_text(
+        next_user, loc, dist,
+        likes_today=likes_today, likes_limit=likes_limit,
+    )
+    kb = feed_actions_kb(next_user.id, loc).as_markup()
+    chat_id = callback.message.chat.id if callback.message else 0
+    message_id = callback.message.message_id if callback.message else 0
+    try:
+        if next_user.profile_photo_file_id:
+            media = InputMediaPhoto(media=next_user.profile_photo_file_id, caption=card_text)
+            await bot.edit_message_media(
+                chat_id=chat_id,
+                message_id=message_id,
+                media=media,
+                reply_markup=kb,
+            )
+        else:
+            await bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=card_text,
+                reply_markup=kb,
+            )
+    except (TelegramBadRequest, Exception):
+        if callback.message:
+            if next_user.profile_photo_file_id:
+                await callback.message.answer_photo(
+                    next_user.profile_photo_file_id,
+                    caption=card_text,
+                    reply_markup=kb,
+                )
+            else:
+                await callback.message.answer(card_text, reply_markup=kb)
+
+
+async def _send_card(
+    message: Message,
+    user: User,
+    viewer_id: int,
+    locale: str = "ru",
+    distance_km: Optional[float] = None,
+    likes_today: Optional[int] = None,
+    likes_limit: Optional[int] = None,
+) -> None:
+    text = _card_text(user, locale, distance_km, likes_today, likes_limit)
     kb = feed_actions_kb(user.id, locale).as_markup()
     if user.profile_photo_file_id:
         await message.answer_photo(
@@ -146,11 +208,15 @@ async def feed_open(message: Message, state: FSMContext) -> None:
             await message.answer(t("rate_limit", loc, min=wait_min))
             return
         pair = await _get_next_feed_user(session, viewer.id, viewer)
+        today_count = await count_likes_today(session, viewer.id)
     if not pair:
         await message.answer(t("feed_empty", loc))
         return
     next_user, dist = pair
-    await _send_card(message, next_user, viewer.id, loc, dist)
+    await _send_card(
+        message, next_user, viewer.id, loc, dist,
+        likes_today=today_count, likes_limit=config.daily_likes_limit,
+    )
 
 
 @router.callback_query(F.data.startswith("like:"))
@@ -160,7 +226,10 @@ async def feed_like(callback: CallbackQuery, bot: Bot) -> None:
     try:
         receiver_id = int(callback.data.split(":")[1])
     except (IndexError, ValueError):
-        await callback.answer(t("error", "ru"))
+        async with async_session_factory() as session:
+            viewer = await get_user_by_telegram_id(session, callback.from_user.id)
+            loc = getattr(viewer, "locale", None) or "ru" if viewer else "ru"
+        await callback.answer(t("error", loc))
         return
     await callback.answer()
     try:
@@ -194,31 +263,37 @@ async def feed_like(callback: CallbackQuery, bot: Bot) -> None:
                     t("feed_mutual_you", loc, name=rname),
                     reply_markup=main_menu_kb(loc),
                 )
-            else:
-                await callback.message.answer(t("feed_like_sent", loc))
+                return
+            await callback.message.answer(t("feed_like_sent", loc))
             pair = await _get_next_feed_user(session, viewer.id, viewer)
+            today_count = await count_likes_today(session, viewer.id)
             if pair:
                 next_user, dist = pair
-                await callback.message.answer_photo(
-                    next_user.profile_photo_file_id or "",
-                    caption=_card_text(next_user, loc, dist),
-                    reply_markup=feed_actions_kb(next_user.id, loc).as_markup(),
+                await _show_next_card(
+                    callback, bot, next_user, loc, dist,
+                    likes_today=today_count, likes_limit=config.daily_likes_limit,
                 )
             else:
                 await callback.message.answer(t("feed_more_later", loc))
     except Exception as e:
         logger.exception("feed_like: %s", e)
-        await callback.message.answer(t("feed_error", "ru"))
+        async with async_session_factory() as session:
+            viewer = await get_user_by_telegram_id(session, callback.from_user.id)
+            loc = getattr(viewer, "locale", None) or "ru" if viewer else "ru"
+        await callback.message.answer(t("feed_error", loc))
 
 
 @router.callback_query(F.data.startswith("skip:"))
-async def feed_skip(callback: CallbackQuery) -> None:
+async def feed_skip(callback: CallbackQuery, bot: Bot) -> None:
     if not callback.data or not callback.message:
         return
     try:
         _ = int(callback.data.split(":")[1])
     except (IndexError, ValueError):
-        await callback.answer(t("error", "ru"))
+        async with async_session_factory() as session:
+            viewer = await get_user_by_telegram_id(session, callback.from_user.id)
+            loc = getattr(viewer, "locale", None) or "ru" if viewer else "ru"
+        await callback.answer(t("error", loc))
         return
     await callback.answer()
     config = get_config()
@@ -234,18 +309,12 @@ async def feed_skip(callback: CallbackQuery) -> None:
             await callback.message.answer(t("rate_limit", loc, min=wait_min))
             return
         pair = await _get_next_feed_user(session, viewer.id, viewer)
+        today_count = await count_likes_today(session, viewer.id)
     if pair:
         next_user, dist = pair
-        if next_user.profile_photo_file_id:
-            await callback.message.answer_photo(
-                next_user.profile_photo_file_id,
-                caption=_card_text(next_user, loc, dist),
-                reply_markup=feed_actions_kb(next_user.id, loc).as_markup(),
-            )
-        else:
-            await callback.message.answer(
-                _card_text(next_user, loc, dist),
-                reply_markup=feed_actions_kb(next_user.id, loc).as_markup(),
-            )
+        await _show_next_card(
+            callback, bot, next_user, loc, dist,
+            likes_today=today_count, likes_limit=config.daily_likes_limit,
+        )
     else:
         await callback.message.answer(t("feed_more_later", loc))

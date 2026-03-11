@@ -1,0 +1,28 @@
+# Git and IDE
+.git
+.gitignore
+.idea
+.vscode
+.cursor
+
+# Python
+venv
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.coverage
+*.db
+
+# Env (compose injects from host)
+.env
+
+# Docs and scripts (not needed in image)
+*.md
+*.bat
+spec.md
+feature.md
+IMPROVEMENTS.md
+pytest.ini
+.coveragerc
+tests/

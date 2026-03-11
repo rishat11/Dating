@@ -22,6 +22,8 @@ from services.unlocks import get_playlist_stub, get_next_challenge
 from services.chat_service import (
     deliver_message_to_partner,
     get_undelivered_messages,
+    get_last_message_per_match,
+    get_unread_count_per_match,
     send_pending_message_to_viewer,
 )
 from fsm.states import ChatState
@@ -97,6 +99,36 @@ async def chats_list(message: Message, state: FSMContext) -> None:
     if not matches:
         await message.answer(t("chat_no_chats", loc), reply_markup=main_menu_kb(loc))
         return
+    match_ids = [m.id for m in matches]
+    async with async_session_factory() as session:
+        unread = await get_unread_count_per_match(session, match_ids, user.id)
+        last_msgs = await get_last_message_per_match(session, match_ids)
+    lines = []
+    for m in matches:
+        partner = m.partner_of(user.id)
+        if not partner:
+            continue
+        em = gender_emoji(partner.gender)
+        name_age = f"{em} {partner.display_name or partner.first_name} ({partner.age or '?'})"
+        preview = ""
+        last_msg = last_msgs.get(m.id)
+        if last_msg:
+            if last_msg.type == MessageType.TEXT.value and last_msg.text:
+                preview = (last_msg.text[:50] + "…") if len(last_msg.text or "") > 50 else (last_msg.text or "")
+            elif last_msg.type == MessageType.PHOTO.value:
+                preview = t("chat_preview_photo", loc)
+            elif last_msg.type == MessageType.VOICE.value:
+                preview = t("chat_preview_voice", loc)
+            elif last_msg.type == MessageType.STICKER.value:
+                preview = t("chat_preview_sticker", loc)
+            elif last_msg.type == MessageType.ANIMATION.value:
+                preview = t("chat_preview_gif", loc)
+        n_unread = unread.get(m.id, 0)
+        unread_suffix = " " + t("chat_preview_unread", loc, n=n_unread) if n_unread else ""
+        if preview:
+            lines.append(f"💬 {name_age}{unread_suffix}: {preview}")
+        else:
+            lines.append(f"💬 {name_age}{unread_suffix}")
     from aiogram.utils.keyboard import InlineKeyboardBuilder
     from aiogram.types import InlineKeyboardButton
     builder = InlineKeyboardBuilder()
@@ -104,13 +136,18 @@ async def chats_list(message: Message, state: FSMContext) -> None:
         partner = m.partner_of(user.id)
         if partner:
             em = gender_emoji(partner.gender)
+            label = f"💬 {em} {partner.display_name or partner.first_name} ({partner.age or '?'})"
+            n_unread = unread.get(m.id, 0)
+            if n_unread:
+                label += " " + t("chat_preview_unread", loc, n=n_unread)
             builder.add(
                 InlineKeyboardButton(
-                    text=f"💬 {em} {partner.display_name or partner.first_name} ({partner.age or '?'})",
+                    text=label,
                     callback_data=f"open_chat:{m.id}",
                 )
             )
-    await message.answer(t("chat_choose", loc), reply_markup=builder.as_markup())
+    body = (t("chat_choose", loc) + "\n\n" + "\n".join(lines)) if lines else t("chat_choose", loc)
+    await message.answer(body, reply_markup=builder.as_markup())
 
 
 @router.callback_query(F.data.startswith("open_chat:"))
@@ -120,7 +157,10 @@ async def chat_open(callback: CallbackQuery, bot: Bot, state: FSMContext) -> Non
     try:
         match_id = int(callback.data.split(":")[1])
     except (IndexError, ValueError):
-        await callback.answer(t("error", "ru"))
+        async with async_session_factory() as session:
+            u = await get_user_by_telegram_id(session, callback.from_user.id)
+            loc = _loc(u) if u else "ru"
+        await callback.answer(t("error", loc))
         return
     await callback.answer()
     async with async_session_factory() as session:
@@ -128,11 +168,11 @@ async def chat_open(callback: CallbackQuery, bot: Bot, state: FSMContext) -> Non
         if not user:
             return
         match = await get_match_by_id_for_user(session, match_id, user.id)
+        loc = _loc(user)
         if not match:
-            await callback.message.answer(t("chat_not_found", "ru"))
+            await callback.message.answer(t("chat_not_found", loc))
             return
         partner = match.partner_of(user.id)
-        loc = _loc(user)
         di = await get_or_create_destiny_index(session, match.id)
         header = await _chat_header(session, match, user.id, loc, destiny_index=di)
     await state.update_data(active_match_id=match_id)
@@ -672,7 +712,7 @@ async def unlock_cloud(callback: CallbackQuery) -> None:
     async with async_session_factory() as session:
         user = await get_user_by_telegram_id(session, callback.from_user.id)
         loc = _loc(user) if user else "ru"
-    await callback.message.answer(t("chat_cloud", loc) + " — в разработке.")
+    await callback.message.answer(t("chat_cloud", loc) + " — " + t("chat_cloud_coming_soon", loc))
 
 
 @router.callback_query(F.data.startswith("end_chat:"))

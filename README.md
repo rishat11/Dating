@@ -5,7 +5,8 @@
 ## Требования
 
 - Python 3.10+
-- Опционально: Redis (очередь расчёта индекса и кэш; при отсутствии — in-memory fallback, без персистентности)
+- PostgreSQL 16 (локально — через Docker, см. ниже)
+- Redis (очередь и кэш; локально — через Docker)
 
 ## Установка
 
@@ -23,8 +24,8 @@ pip install -r requirements.txt
 | Переменная | Обязательно | Описание |
 |------------|-------------|----------|
 | `BOT_TOKEN` | Да | Токен бота от @BotFather |
-| `DATABASE_URL` | Нет | По умолчанию `sqlite+aiosqlite:///./dating.db` |
-| `REDIS_URL` | Нет | Для очереди расчёта индекса (list + BLPOP) и кэша процента по паре (TTL). **Для продакшена рекомендуется**: без Redis — однопоточный режим, очередь в памяти (при рестарте задачи теряются). |
+| `DATABASE_URL` | Нет | По умолчанию `postgresql+asyncpg://dating:dating@localhost:5432/dating` (локальный Postgres в Docker) |
+| `REDIS_URL` | Нет | Очередь и кэш. Локально: `redis://localhost:6379` (поднять `docker compose up -d redis`). В Docker задаётся в compose. |
 | `DEEPSEEK_API_KEY` | Нет | Для PRO-сценариев (анализ диалога и т.д.) |
 | `DAILY_LIKES_LIMIT` | Нет | Лимит лайков в день (по умолчанию 10) |
 | `DESTINY_INDEX_CACHE_TTL` | Нет | TTL кэша индекса в секундах |
@@ -38,11 +39,24 @@ pip install -r requirements.txt
 
 ## Запуск
 
-**Long polling (разработка):**
+**Локальная разработка (бот на хосте, Postgres и Redis в Docker):**
 
 ```bash
+# Поднять только БД и Redis
+docker compose up -d postgres redis
+
+# В .env: BOT_TOKEN, DATABASE_URL=postgresql+asyncpg://dating:dating@localhost:5432/dating, REDIS_URL=redis://localhost:6379
 python -m bot.main
 ```
+
+**Всё в Docker (продакшен):**
+
+```bash
+# Создайте .env из .env.example и укажите BOT_TOKEN
+docker compose up -d
+```
+
+Поднимаются бот, PostgreSQL 16 и Redis. Учётные данные Postgres: пользователь/пароль/БД — `dating`. Логи бота: `docker compose logs -f bot`.
 
 **Webhook (production):** задайте `WEBHOOK_HOST` и `WEBHOOK_PATH` в `.env` и используйте соответствующий режим в `main.py`.
 

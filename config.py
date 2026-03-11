@@ -32,11 +32,17 @@ class Config:
     webhook_path: Optional[str] = None
     webhook_host: Optional[str] = None
 
+    # Privacy policy URL (shown in Settings)
+    privacy_policy_url: Optional[str] = None
+
     @classmethod
     def from_env(cls) -> "Config":
         return cls(
             bot_token=os.environ["BOT_TOKEN"],
-            database_url=os.environ.get("DATABASE_URL", "sqlite+aiosqlite:///./dating.db"),
+            database_url=os.environ.get(
+                "DATABASE_URL",
+                "postgresql+asyncpg://dating:dating@localhost:5432/dating",
+            ),
             redis_url=os.environ.get("REDIS_URL") or None,
             deepseek_api_key=os.environ.get("DEEPSEEK_API_KEY") or None,
             daily_likes_limit=int(os.environ.get("DAILY_LIKES_LIMIT", "10")),
@@ -48,6 +54,7 @@ class Config:
             messages_retention_months=int(os.environ.get("MESSAGES_RETENTION_MONTHS", "12")),
             webhook_path=os.environ.get("WEBHOOK_PATH"),
             webhook_host=os.environ.get("WEBHOOK_HOST"),
+            privacy_policy_url=os.environ.get("PRIVACY_POLICY_URL") or None,
         )
 
 

@@ -10,7 +10,7 @@ from db.database import async_session_factory
 from db.models import age_from_birth_date, zodiac_from_birth_date
 from services.user_service import get_user_by_telegram_id
 from fsm.states import ProfileState
-from keyboards.common import main_menu_kb, cancel_kb, cancel_skip_kb, profile_edit_menu_kb, gender_choice_kb, looking_choice_kb
+from keyboards.common import main_menu_kb, cancel_kb, cancel_skip_kb, profile_edit_menu_kb, profile_edit_about_kb, gender_choice_kb, looking_choice_kb
 from i18n import t
 from services.feed_service import gender_emoji
 
@@ -44,6 +44,7 @@ async def profile_start(message: Message, state: FSMContext) -> None:
             await _send_profile_view(message, user, loc)
             await message.answer(t("profile_edit_cmd", loc))
             return
+    await state.update_data(locale=loc)
     await message.answer(t("profile_name_prompt", loc), reply_markup=cancel_kb(loc))
     await state.set_state(ProfileState.display_name)
 
@@ -66,6 +67,7 @@ async def profile_edit_start(message: Message, state: FSMContext) -> None:
             )
             return
     await state.clear()
+    await state.update_data(locale=loc)
     await message.answer(t("profile_name_prompt", loc), reply_markup=cancel_kb(loc))
     await state.set_state(ProfileState.display_name)
 
@@ -108,6 +110,16 @@ async def profile_edit_choose_field(callback: CallbackQuery, state: FSMContext) 
             loc = _locale(user) if user else "ru"
         await callback.message.answer(t("profile_edit_done", loc), reply_markup=main_menu_kb(loc))
         return
+    if part == "more":
+        await callback.answer()
+        async with async_session_factory() as session:
+            user = await get_user_by_telegram_id(session, callback.from_user.id)
+            loc = _locale(user) if user else "ru"
+        await callback.message.answer(
+            t("profile_edit_about_section", loc),
+            reply_markup=profile_edit_about_kb(loc).as_markup(),
+        )
+        return
     if part not in _EDIT_FIELD_CONFIG:
         await callback.answer()
         return
@@ -147,10 +159,11 @@ async def profile_display_name(message: Message, state: FSMContext) -> None:
         await message.answer(t("profile_cancelled", loc), reply_markup=main_menu_kb(loc))
         return
     name = (message.text or "").strip() if message.text else ""
-    if not name or len(name) > 100:
-        await message.answer(t("profile_name_invalid", "ru"))
-        return
     data = await state.get_data()
+    loc = data.get("locale", "ru")
+    if not name or len(name) > 100:
+        await message.answer(t("profile_name_invalid", loc))
+        return
     if data.get("edit_mode"):
         async with async_session_factory() as session:
             user = await get_user_by_telegram_id(session, message.from_user.id)
@@ -163,7 +176,6 @@ async def profile_display_name(message: Message, state: FSMContext) -> None:
         await _send_edit_menu(message, loc, state)
         return
     await state.update_data(display_name=name)
-    loc = "ru"
     await message.answer(
         t("profile_gender_prompt", loc),
         reply_markup=gender_choice_kb(loc).as_markup(),
@@ -218,6 +230,8 @@ async def profile_gender_callback(callback: CallbackQuery, state: FSMContext) ->
 @router.message(ProfileState.gender, F.text)
 async def profile_gender_message(message: Message, state: FSMContext) -> None:
     """Обработка только отмены; выбор пола — по кнопкам."""
+    data = await state.get_data()
+    loc = data.get("locale", "ru")
     if message.text and message.text.strip() in _cancel_texts():
         await state.clear()
         async with async_session_factory() as session:
@@ -225,7 +239,6 @@ async def profile_gender_message(message: Message, state: FSMContext) -> None:
             loc = _locale(user) if user else "ru"
         await message.answer(t("profile_cancelled", loc), reply_markup=main_menu_kb(loc))
         return
-    loc = "ru"
     await message.answer(t("profile_gender_prompt", loc), reply_markup=gender_choice_kb(loc).as_markup())
 
 
@@ -273,6 +286,8 @@ async def profile_looking_callback(callback: CallbackQuery, state: FSMContext) -
 @router.message(ProfileState.looking_for, F.text)
 async def profile_looking_message(message: Message, state: FSMContext) -> None:
     """Обработка только отмены; выбор «Ищу» — по кнопкам."""
+    data = await state.get_data()
+    loc = data.get("locale", "ru")
     if message.text and message.text.strip() in _cancel_texts():
         await state.clear()
         async with async_session_factory() as session:
@@ -280,7 +295,6 @@ async def profile_looking_message(message: Message, state: FSMContext) -> None:
             loc = _locale(user) if user else "ru"
         await message.answer(t("profile_cancelled", loc), reply_markup=main_menu_kb(loc))
         return
-    loc = "ru"
     await message.answer(
         t("profile_looking_prompt", loc),
         reply_markup=looking_choice_kb(loc).as_markup(),
@@ -312,7 +326,8 @@ async def profile_city(message: Message, state: FSMContext) -> None:
         await _send_edit_menu(message, loc, state)
         return
     await state.update_data(city=city)
-    await message.answer(t("profile_photo_prompt", "ru"))
+    loc = data.get("locale", "ru")
+    await message.answer(t("profile_photo_prompt", loc))
     await state.set_state(ProfileState.photo)
 
 
@@ -332,9 +347,10 @@ async def profile_photo(message: Message, state: FSMContext) -> None:
         await _send_edit_menu(message, loc, state)
         return
     await state.update_data(profile_photo_file_id=photo.file_id)
+    loc = data.get("locale", "ru")
     await message.answer(
-        t("profile_description_prompt", "ru"),
-        reply_markup=cancel_skip_kb("ru"),
+        t("profile_description_prompt", loc),
+        reply_markup=cancel_skip_kb(loc),
     )
     await state.set_state(ProfileState.description)
 
@@ -364,7 +380,8 @@ async def profile_description(message: Message, state: FSMContext) -> None:
         await _send_edit_menu(message, loc, state)
         return
     await state.update_data(description=desc or None)
-    await message.answer(t("profile_interests_prompt", "ru"), reply_markup=cancel_skip_kb("ru"))
+    loc = data.get("locale", "ru")
+    await message.answer(t("profile_interests_prompt", loc), reply_markup=cancel_skip_kb(loc))
     await state.set_state(ProfileState.interests)
 
 
@@ -393,7 +410,8 @@ async def profile_interests(message: Message, state: FSMContext) -> None:
         await _send_edit_menu(message, loc, state)
         return
     await state.update_data(interests=interests or None)
-    await message.answer(t("profile_movies_prompt", "ru"), reply_markup=cancel_skip_kb("ru"))
+    loc = data.get("locale", "ru")
+    await message.answer(t("profile_movies_prompt", loc), reply_markup=cancel_skip_kb(loc))
     await state.set_state(ProfileState.movies)
 
 
@@ -422,7 +440,8 @@ async def profile_movies(message: Message, state: FSMContext) -> None:
         await _send_edit_menu(message, loc, state)
         return
     await state.update_data(movies=val or None)
-    await message.answer(t("profile_series_prompt", "ru"), reply_markup=cancel_skip_kb("ru"))
+    loc = data.get("locale", "ru")
+    await message.answer(t("profile_series_prompt", loc), reply_markup=cancel_skip_kb(loc))
     await state.set_state(ProfileState.series)
 
 
@@ -451,7 +470,8 @@ async def profile_series(message: Message, state: FSMContext) -> None:
         await _send_edit_menu(message, loc, state)
         return
     await state.update_data(series=val or None)
-    await message.answer(t("profile_music_prompt", "ru"), reply_markup=cancel_skip_kb("ru"))
+    loc = data.get("locale", "ru")
+    await message.answer(t("profile_music_prompt", loc), reply_markup=cancel_skip_kb(loc))
     await state.set_state(ProfileState.music)
 
 

@@ -5,7 +5,7 @@ from typing import Optional, TYPE_CHECKING
 from aiogram import Bot
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.types import InlineKeyboardButton
-from sqlalchemy import select, update
+from sqlalchemy import select, update, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import Message as MsgModel, MessageType
@@ -105,6 +105,42 @@ async def deliver_message_to_partner(
             text,
             reply_markup=builder.as_markup(),
         )
+
+
+async def get_last_message_per_match(
+    session: AsyncSession, match_ids: list[int]
+) -> dict[int, MsgModel]:
+    """Last message (by id) per match_id. Returns dict match_id -> Message or missing key."""
+    if not match_ids:
+        return {}
+    # Subquery: max(id) per match_id
+    subq = (
+        select(MsgModel.match_id, func.max(MsgModel.id).label("max_id"))
+        .where(MsgModel.match_id.in_(match_ids))
+        .group_by(MsgModel.match_id)
+    ).subquery()
+    result = await session.execute(
+        select(MsgModel).join(subq, (MsgModel.match_id == subq.c.match_id) & (MsgModel.id == subq.c.max_id))
+    )
+    return {row.match_id: row for row in result.scalars().all()}
+
+
+async def get_unread_count_per_match(
+    session: AsyncSession, match_ids: list[int], recipient_user_id: int
+) -> dict[int, int]:
+    """Count of undelivered messages (to recipient_user_id) per match. sender_id != recipient_user_id = from partner."""
+    if not match_ids:
+        return {}
+    result = await session.execute(
+        select(MsgModel.match_id, func.count(MsgModel.id).label("cnt"))
+        .where(
+            MsgModel.match_id.in_(match_ids),
+            MsgModel.sender_id != recipient_user_id,
+            MsgModel.recipient_delivered_at.is_(None),
+        )
+        .group_by(MsgModel.match_id)
+    )
+    return {row.match_id: row.cnt for row in result.all()}
 
 
 async def get_undelivered_messages(

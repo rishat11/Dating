@@ -76,8 +76,8 @@ def looking_choice_kb(locale: str = "ru") -> InlineKeyboardBuilder:
     return builder
 
 
-def profile_edit_menu_kb(locale: str = "ru") -> InlineKeyboardBuilder:
-    """Inline keyboard: what profile field to edit + Done."""
+def profile_edit_main_kb(locale: str = "ru") -> InlineKeyboardBuilder:
+    """Inline keyboard: main profile fields + More."""
     builder = InlineKeyboardBuilder()
     builder.row(
         InlineKeyboardButton(text=t("profile_field_name", locale), callback_data="edit_profile:display_name"),
@@ -92,6 +92,15 @@ def profile_edit_menu_kb(locale: str = "ru") -> InlineKeyboardBuilder:
         InlineKeyboardButton(text=t("profile_about", locale), callback_data="edit_profile:description"),
     )
     builder.row(
+        InlineKeyboardButton(text=t("profile_edit_more", locale), callback_data="edit_profile:more"),
+    )
+    return builder
+
+
+def profile_edit_about_kb(locale: str = "ru") -> InlineKeyboardBuilder:
+    """Inline keyboard: about-you fields + Done."""
+    builder = InlineKeyboardBuilder()
+    builder.row(
         InlineKeyboardButton(text=t("profile_interests", locale), callback_data="edit_profile:interests"),
     )
     builder.row(
@@ -103,3 +112,8 @@ def profile_edit_menu_kb(locale: str = "ru") -> InlineKeyboardBuilder:
         InlineKeyboardButton(text=t("profile_edit_done", locale), callback_data="edit_profile:done"),
     )
     return builder
+
+
+def profile_edit_menu_kb(locale: str = "ru") -> InlineKeyboardBuilder:
+    """Main edit menu (first screen). Use profile_edit_about_kb for second screen."""
+    return profile_edit_main_kb(locale)

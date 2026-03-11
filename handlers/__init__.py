@@ -1,9 +1,10 @@
 from aiogram import Router
 
-from handlers import onboarding, profile, feed, chat, settings
+from handlers import cancel, onboarding, profile, feed, chat, settings
 
 def setup_routers() -> Router:
     root = Router()
+    root.include_router(cancel.router)
     root.include_router(onboarding.router)
     root.include_router(profile.router)
     root.include_router(feed.router)

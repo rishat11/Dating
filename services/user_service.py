@@ -60,11 +60,11 @@ async def count_likes_today(session: AsyncSession, user_id: int) -> int:
     from sqlalchemy import func
     from db.models import Like
     from datetime import date
-    today_str = date.today().isoformat()
+    today = date.today()
     result = await session.execute(
         select(func.count(Like.id)).where(
             Like.sender_id == user_id,
-            func.date(Like.created_at) == today_str,
+            func.date(Like.created_at) == today,
         )
     )
     return result.scalar() or 0

@@ -12,21 +12,19 @@ from db.database import async_session_factory
 from db.models import User, Match, MatchStatus
 from services.user_service import get_user_by_telegram_id
 from services.match_service import get_user_matches
+from config import get_config
 from keyboards.common import main_menu_kb
 from i18n import t
 
 logger = logging.getLogger(__name__)
 router = Router(name="settings")
 
-# Privacy policy URL (config or constant)
-PRIVACY_URL = "https://example.com/privacy"  # TODO: set in config
-
 
 def _locale_display(locale: str) -> str:
     return t("settings_lang_ru", "ru") if locale == "ru" else t("settings_lang_en", "en")
 
 
-@router.message(F.text.in_({"⚙️ Настройки", "⚙️ Settings"}))
+@router.message(F.text.in_({t("menu_settings", "ru"), t("menu_settings", "en")}))
 async def settings_open(message: Message, state: FSMContext) -> None:
     await state.clear()
     async with async_session_factory() as session:
@@ -54,9 +52,11 @@ async def settings_open(message: Message, state: FSMContext) -> None:
     builder.row(
         InlineKeyboardButton(text=t("settings_delete_account", locale), callback_data="settings:delete"),
     )
-    # builder.row(
-    #     InlineKeyboardButton(text=t("settings_privacy", locale), url=PRIVACY_URL),
-    # )
+    config = get_config()
+    if config.privacy_policy_url:
+        builder.row(
+            InlineKeyboardButton(text=t("settings_privacy", locale), url=config.privacy_policy_url),
+        )
 
     text = (
         t("settings_title", locale) + "\n\n"

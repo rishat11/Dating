@@ -61,8 +61,9 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
         InlineKeyboardButton(text="Русский", callback_data="lang:ru"),
         InlineKeyboardButton(text="English", callback_data="lang:en"),
     )
+    step_text = t("onboarding_step", "ru", n=1)
     await message.answer(
-        t("onboarding_language_first", "ru"),
+        f"{step_text}\n\n{t('onboarding_language_first', 'ru')}\n\n{t('onboarding_cancel_hint', 'ru')}",
         reply_markup=builder.as_markup(),
     )
     await state.set_state(OnboardingState.language)
@@ -82,8 +83,9 @@ async def onboarding_birth_date(message: Message, state: FSMContext) -> None:
         await message.answer(t("onboarding_birth_format", locale))
         return
     await state.update_data(birth_date=text)
+    step_text = t("onboarding_step", locale, n=3)
     await message.answer(
-        t("onboarding_age_confirm", locale),
+        f"{step_text}\n\n{t('onboarding_age_confirm', locale)}",
         reply_markup=yes_no_kb(locale),
     )
     await state.set_state(OnboardingState.age_confirm)
@@ -96,7 +98,11 @@ async def onboarding_age_confirm(message: Message, state: FSMContext) -> None:
     if message.text not in (CONSENT_YES_RU, CONSENT_YES_EN):
         await message.answer(t("onboarding_age_only", locale))
         return
-    await message.answer(t("onboarding_rules", locale), reply_markup=yes_no_kb(locale))
+    step_text = t("onboarding_step", locale, n=4)
+    await message.answer(
+        f"{step_text}\n\n{t('onboarding_rules', locale)}",
+        reply_markup=yes_no_kb(locale),
+    )
     await state.set_state(OnboardingState.rules_accept)
 
 
@@ -153,8 +159,9 @@ async def onboarding_language(callback: CallbackQuery, state: FSMContext) -> Non
             user.locale = lang
             await session.commit()
         await state.update_data(locale=lang)
+        step_text = t("onboarding_step", lang, n=2)
         await callback.message.answer(
-            t("onboarding_welcome", lang),
+            f"{step_text}\n\n{t('onboarding_welcome', lang)}",
             reply_markup=cancel_kb(lang),
         )
         await state.set_state(OnboardingState.birth_date)
@@ -163,8 +170,8 @@ async def onboarding_language(callback: CallbackQuery, state: FSMContext) -> Non
 
 
 @router.message(
-    StateFilter(OnboardingState.birth_date, OnboardingState.age_confirm, OnboardingState.rules_accept),
-    F.text.in_({"❌ Отмена", "❌ No"}),
+    StateFilter(OnboardingState.language, OnboardingState.birth_date, OnboardingState.age_confirm, OnboardingState.rules_accept),
+    F.text.in_((t("cancel", "ru"), t("cancel", "en"))),
 )
 async def onboarding_cancel(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
